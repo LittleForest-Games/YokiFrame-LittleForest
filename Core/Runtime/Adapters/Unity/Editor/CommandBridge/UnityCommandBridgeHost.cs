@@ -55,12 +55,15 @@ namespace YokiFrame.Unity
             KitStateSnapshotPublisher.RestoreAndPublishPoolMonitorPreferences(sYokiframeRoot);
 
             RegisterCommandHandlers();
+            LoadExtensions();
             UnityEventStreamWriter.Init(sYokiframeRoot);
             ResetCommandDirectoryWatcher();
 
             EditorApplication.update += OnEditorUpdate;
+            AssemblyReloadEvents.beforeAssemblyReload += DisposeExtensions;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeCommandDirectoryWatcher;
             EditorApplication.quitting += DisposeCommandDirectoryWatcher;
+            EditorApplication.quitting += DisposeExtensions;
 
             WriteEngineRegistry();
             PollCores();
@@ -140,6 +143,7 @@ namespace YokiFrame.Unity
             if (ShouldPoll(nowUtc, sLastKitSnapshotPublishUtc, TimeSpan.FromMilliseconds(KIT_SNAPSHOT_INTERVAL_MS)))
             {
                 KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
+                Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
                 sLastKitSnapshotPublishUtc = nowUtc;
             }
 
