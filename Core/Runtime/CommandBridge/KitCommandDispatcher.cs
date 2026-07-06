@@ -114,7 +114,30 @@ namespace YokiFrame
                 return JsonHelper.BuildError(requestId, kit, action, "Invalid action identifier '" + action + "'", engineId, "InvalidAction", false);
 
             var payloadJson = JsonHelper.ExtractRaw(commandJson, "payload") ?? "{}";
-            var command = new CommandBridgeCommand(requestId, engineId, source, kit, action, payloadJson);
+
+            // 解析命令 envelope 字段（protocolVersion/createdAtUtc/timeoutMs）。
+            // 缺字段时使用默认值，兼容旧命令：
+            // - protocolVersion 缺省为 null
+            // - createdAtUtc 缺省为 DateTime.MinValue（IsExpired 永远为 false）
+            // - timeoutMs 缺省为 0（无超时，DeadlineUtc = DateTime.MaxValue）
+            var protocolVersion = JsonHelper.ExtractString(commandJson, "protocolVersion");
+            var createdAtStr = JsonHelper.ExtractString(commandJson, "createdAtUtc");
+            DateTime createdAtUtc = DateTime.MinValue;
+            if (!string.IsNullOrEmpty(createdAtStr)
+                && DateTime.TryParse(createdAtStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                createdAtUtc = parsed;
+            int timeoutMs = 0;
+            JsonHelper.TryExtractInt(commandJson, "timeoutMs", out timeoutMs);
+
+            var command = new CommandBridgeCommand(requestId, engineId, source, kit, action, payloadJson,
+                protocolVersion, createdAtUtc, timeoutMs);
+
+            // 过期检查在 Policy 之前：过期命令不调用 Policy 链，直接返回 CommandExpired 错误。
+            if (command.IsExpired(DateTime.UtcNow))
+                return JsonHelper.BuildError(requestId, kit, action,
+                    $"Command expired: deadline {command.DeadlineUtc:O} has passed",
+                    engineId, "CommandExpired", false);
+
             var policyResult = CommandPolicy != null ? CommandPolicy(command) : CommandBridgePolicyResult.Allow();
             if (policyResult == null || !policyResult.Allowed)
             {
