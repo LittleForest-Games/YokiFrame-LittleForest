@@ -47,11 +47,31 @@ namespace YokiFrame
             return new PolicyToken(this, policy);
         }
 
-        /// <summary>注册一个 Kit 命令处理器。</summary>
+        /// <summary>
+        /// 注册一个 Kit 命令处理器。
+        /// 重复 KitName 抛 InvalidOperationException（破坏性变更，YokiFrame 2.0 preview 阶段可接受）。
+        /// </summary>
         public void Register(IKitCommandHandler handler)
         {
             if (handler == default) throw new ArgumentNullException(nameof(handler));
+            if (mHandlers.ContainsKey(handler.KitName))
+                throw new InvalidOperationException(
+                    $"A handler for kit '{handler.KitName}' is already registered. " +
+                    $"Use Unregister first or check existing registration.");
             mHandlers[handler.KitName] = handler;
+        }
+
+        /// <summary>
+        /// 尝试注册一个 Kit 命令处理器，重复 KitName 时返回 false（不抛异常）。
+        /// </summary>
+        /// <param name="handler">要注册的处理器。</param>
+        /// <returns>成功注册时返回 true；handler 为 null 或 KitName 已存在时返回 false。</returns>
+        public bool TryRegister(IKitCommandHandler handler)
+        {
+            if (handler == null || mHandlers.ContainsKey(handler.KitName))
+                return false;
+            mHandlers[handler.KitName] = handler;
+            return true;
         }
 
         /// <summary>注销一个 Kit 命令处理器。</summary>

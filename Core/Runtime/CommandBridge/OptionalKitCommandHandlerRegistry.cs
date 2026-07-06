@@ -27,8 +27,9 @@ namespace YokiFrame
                 return false;
             }
 
-            dispatcher.Register(handler);
-            return true;
+            // 使用 TryRegister 而非 Register：可选 Kit 可能因类型名重复加载或不存在而不应中断，
+            // 重复 KitName 时静默返回 false（不抛异常），与 TryRegister 的无异常路径一致。
+            return dispatcher.TryRegister(handler);
         }
 
         /// <summary>
