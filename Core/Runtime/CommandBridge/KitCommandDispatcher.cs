@@ -11,6 +11,7 @@ namespace YokiFrame
     public sealed class KitCommandDispatcher
     {
         private readonly Dictionary<string, IKitCommandHandler> mHandlers = new();
+        private readonly List<Func<CommandBridgeCommand, CommandBridgePolicyResult>> mPolicies = new();
 
         /// <summary>
         /// 命令缺少 engineId 时使用的默认宿主引擎标识。
@@ -19,8 +20,32 @@ namespace YokiFrame
 
         /// <summary>
         /// 可选命令策略钩子，用于在分发前拒绝或允许命令。
+        /// 保留为 [Obsolete] 兼容属性，内部转换为单元素组合链；新代码应使用 <see cref="RegisterPolicy"/>。
         /// </summary>
-        public Func<CommandBridgeCommand, CommandBridgePolicyResult> CommandPolicy { get; set; }
+        [Obsolete("Use RegisterPolicy instead. This property will be removed in a future version.")]
+        public Func<CommandBridgeCommand, CommandBridgePolicyResult> CommandPolicy
+        {
+            get => mPolicies.Count > 0 ? mPolicies[0] : null;
+            set
+            {
+                mPolicies.Clear();
+                if (value != null) mPolicies.Add(value);
+            }
+        }
+
+        /// <summary>
+        /// 注册命令策略到组合链，返回 token 用于注销。
+        /// 组合链语义：任一策略拒绝即拒绝，不能由后注册策略重新放行；
+        /// 策略返回 null 视为 Deny（错误码 PolicyDenied），不静默放行。
+        /// </summary>
+        /// <param name="policy">命令策略委托。</param>
+        /// <returns>用于注销策略的 token；dispose 后从组合链移除。</returns>
+        public IDisposable RegisterPolicy(Func<CommandBridgeCommand, CommandBridgePolicyResult> policy)
+        {
+            if (policy == null) throw new ArgumentNullException(nameof(policy));
+            mPolicies.Add(policy);
+            return new PolicyToken(this, policy);
+        }
 
         /// <summary>注册一个 Kit 命令处理器。</summary>
         public void Register(IKitCommandHandler handler)
@@ -138,13 +163,28 @@ namespace YokiFrame
                     $"Command expired: deadline {command.DeadlineUtc:O} has passed",
                     engineId, "CommandExpired", false);
 
-            var policyResult = CommandPolicy != null ? CommandPolicy(command) : CommandBridgePolicyResult.Allow();
-            if (policyResult == null || !policyResult.Allowed)
+            // 组合链：任一拒绝即拒绝；policy 返回 null 视为 Deny（与原 CommandPolicy 语义一致，不静默放行）
+            CommandBridgePolicyResult policyResult;
+            if (mPolicies.Count == 0)
             {
-                var code = policyResult != null ? policyResult.ErrorCode : "PolicyDenied";
-                var message = policyResult != null ? policyResult.Message : "Command rejected by policy";
-                var recoverable = policyResult != null && policyResult.Recoverable;
-                return JsonHelper.BuildError(requestId, kit, action, message, engineId, code, recoverable);
+                policyResult = CommandBridgePolicyResult.Allow();  // 无策略默认 Allow
+            }
+            else
+            {
+                policyResult = null;
+                foreach (var policy in mPolicies)
+                {
+                    policyResult = policy(command);
+                    if (policyResult == null || !policyResult.Allowed)
+                        break;  // null 或 Deny 都停止链；后注册策略不能重新放行
+                }
+                // policy 返回 null 视为 Deny（与原 CommandPolicy 处理一致），不静默放行
+                if (policyResult == null)
+                    policyResult = CommandBridgePolicyResult.Deny("PolicyDenied", "Command policy returned null");
+            }
+            if (!policyResult.Allowed)
+            {
+                return JsonHelper.BuildError(requestId, kit, action, policyResult.Message, engineId, policyResult.ErrorCode, policyResult.Recoverable);
             }
 
             if (kit == "System" && action == "list_commands")
@@ -169,6 +209,29 @@ namespace YokiFrame
         {
             var engineId = JsonHelper.ExtractString(commandJson, "engineId");
             return string.IsNullOrEmpty(engineId) ? DefaultEngineId : engineId;
+        }
+
+        /// <summary>
+        /// RegisterPolicy 返回的注销 token；dispose 后从组合链移除对应策略。
+        /// </summary>
+        private sealed class PolicyToken : IDisposable
+        {
+            private readonly KitCommandDispatcher mDispatcher;
+            private readonly Func<CommandBridgeCommand, CommandBridgePolicyResult> mPolicy;
+            private bool mDisposed;
+
+            public PolicyToken(KitCommandDispatcher dispatcher, Func<CommandBridgeCommand, CommandBridgePolicyResult> policy)
+            {
+                mDispatcher = dispatcher;
+                mPolicy = policy;
+            }
+
+            public void Dispose()
+            {
+                if (mDisposed) return;
+                mDisposed = true;
+                mDispatcher.mPolicies.Remove(mPolicy);
+            }
         }
     }
 }
