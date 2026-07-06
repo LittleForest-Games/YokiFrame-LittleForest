@@ -1,0 +1,21 @@
+{
+    "name": "YokiFrame.Tests",
+    "rootNamespace": "YokiFrame.Tests",
+    "references": [
+        "YokiFrame"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ]
+}
