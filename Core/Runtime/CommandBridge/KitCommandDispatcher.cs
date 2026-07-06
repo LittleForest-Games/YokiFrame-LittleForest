@@ -12,6 +12,7 @@ namespace YokiFrame
     {
         private readonly Dictionary<string, IKitCommandHandler> mHandlers = new();
         private readonly List<Func<CommandBridgeCommand, CommandBridgePolicyResult>> mPolicies = new();
+        private readonly List<IKitSnapshotPublisher> mSnapshotPublishers = new();
 
         /// <summary>
         /// 命令缺少 engineId 时使用的默认宿主引擎标识。
@@ -45,6 +46,47 @@ namespace YokiFrame
             if (policy == null) throw new ArgumentNullException(nameof(policy));
             mPolicies.Add(policy);
             return new PolicyToken(this, policy);
+        }
+
+        /// <summary>
+        /// 注册 Kit snapshot 发布器，返回 token 用于注销。
+        /// Host 在统一节奏下通过 <see cref="PublishAllSnapshots"/> 调用所有已注册 publisher。
+        /// </summary>
+        /// <param name="publisher">snapshot 发布器。</param>
+        /// <returns>用于注销的 token；dispose 后从列表移除。</returns>
+        public IDisposable RegisterSnapshot(IKitSnapshotPublisher publisher)
+        {
+            if (publisher == null) throw new ArgumentNullException(nameof(publisher));
+            mSnapshotPublishers.Add(publisher);
+            return new SnapshotToken(this, publisher);
+        }
+
+        /// <summary>
+        /// 获取已注册的 snapshot publishers（只读列表，供 Host 统一调度）。
+        /// </summary>
+        public IReadOnlyList<IKitSnapshotPublisher> SnapshotPublishers => mSnapshotPublishers;
+
+        /// <summary>
+        /// 统一发布所有已注册扩展 snapshot。
+        /// 单个 publisher 抛异常时不中断其他 publisher（异常隔离）。
+        /// 注意：本方法只负责扩展通过 <see cref="RegisterSnapshot"/> 注册的 publisher；
+        /// 内置 Kit 的 snapshot 由 <c>KitStateSnapshotPublisher.TryPublishAll</c> 单独管理。
+        /// </summary>
+        /// <param name="yokiframeRoot">.yokiframe 根目录绝对路径。</param>
+        public void PublishAllSnapshots(string yokiframeRoot)
+        {
+            for (var i = 0; i < mSnapshotPublishers.Count; i++)
+            {
+                var publisher = mSnapshotPublishers[i];
+                try
+                {
+                    publisher.TryPublish(yokiframeRoot);
+                }
+                catch (Exception e)
+                {
+                    LogKit.Warning("[Snapshot] " + publisher.KitName + "/" + publisher.SnapshotName + " 发布失败: " + e.Message);
+                }
+            }
         }
 
         /// <summary>
@@ -251,6 +293,29 @@ namespace YokiFrame
                 if (mDisposed) return;
                 mDisposed = true;
                 mDispatcher.mPolicies.Remove(mPolicy);
+            }
+        }
+
+        /// <summary>
+        /// RegisterSnapshot 返回的注销 token；dispose 后从列表移除对应 publisher。
+        /// </summary>
+        private sealed class SnapshotToken : IDisposable
+        {
+            private readonly KitCommandDispatcher mDispatcher;
+            private readonly IKitSnapshotPublisher mPublisher;
+            private bool mDisposed;
+
+            public SnapshotToken(KitCommandDispatcher dispatcher, IKitSnapshotPublisher publisher)
+            {
+                mDispatcher = dispatcher;
+                mPublisher = publisher;
+            }
+
+            public void Dispose()
+            {
+                if (mDisposed) return;
+                mDisposed = true;
+                mDispatcher.mSnapshotPublishers.Remove(mPublisher);
             }
         }
     }
