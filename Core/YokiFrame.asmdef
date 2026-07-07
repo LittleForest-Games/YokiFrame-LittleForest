@@ -1,11 +1,13 @@
-{
+﻿{
     "name": "YokiFrame",
     "rootNamespace": "YokiFrame",
     "references": [
         "UniTask",
         "YooAsset"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

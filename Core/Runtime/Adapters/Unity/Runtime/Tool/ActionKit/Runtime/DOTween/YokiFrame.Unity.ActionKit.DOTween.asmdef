@@ -1,4 +1,4 @@
-{
+﻿{
     "name": "YokiFrame.Unity.ActionKit.DOTween",
     "rootNamespace": "YokiFrame",
     "references": [
@@ -6,7 +6,9 @@
         "YokiFrame.ActionKit",
         "DOTween.Modules"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

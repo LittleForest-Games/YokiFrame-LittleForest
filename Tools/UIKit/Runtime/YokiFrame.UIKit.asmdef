@@ -1,4 +1,4 @@
-{
+﻿{
     "name":  "YokiFrame.UIKit",
     "rootNamespace": "YokiFrame",
     "references":  [
@@ -7,9 +7,9 @@
                        "UniTask",
                        "ZString"
                    ],
-    "includePlatforms":  [
-
-                         ],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms":  [
 
                          ],

@@ -9,12 +9,6 @@ namespace YokiFrame
     {
         #region 初始化
 
-        static UIKit()
-        {
-            if (UnityEngine.Application.isPlaying)
-                _ = UIRoot.Instance;
-        }
-
         /// <summary>
         /// 获取 UIRoot 实例（退出时返回 null）
         /// </summary>

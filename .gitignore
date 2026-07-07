@@ -29,6 +29,7 @@ $RECYCLE.BIN/
 **/*Test*.asmref.meta
 # Fork (LittleForest): ship YokiFrame C# EditMode tests under Tests/EditMode/
 # Upstream intentionally ignores test files; the fork re-includes its own root Tests/ subtree.
+!Tests.meta
 !Tests/
 !Tests/**
 **/Spec/

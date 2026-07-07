@@ -1,4 +1,4 @@
-{
+﻿{
     "name":  "YokiFrame.SceneKit",
     "rootNamespace": "YokiFrame",
     "references":  [
@@ -6,9 +6,9 @@
                        "UniTask",
                        "YooAsset"
                    ],
-    "includePlatforms":  [
-
-                         ],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms":  [
 
                          ],

@@ -18,6 +18,7 @@ namespace YokiFrame.Unity
         private const int KIT_SNAPSHOT_INTERVAL_MS = 1000;
         private const string ENGINE_ID = "unity-editor";
         private const string BRIDGE_UNAVAILABLE_JSON = "{\"available\":false,\"reason\":\"core is not initialized\"}";
+        private const string BUILTIN_KIT_INTEGRATION_PREF_KEY = "YokiFrame.CommandBridge.EnableBuiltinKitIntegration";
         private const string SAVEKIT_COMMAND_HANDLER_TYPE = "YokiFrame.SaveKitCommandHandler, YokiFrame.SaveKit";
         private const string LOCALIZATIONKIT_COMMAND_HANDLER_TYPE = "YokiFrame.LocalizationKitCommandHandler, YokiFrame.LocalizationKit";
         private const string SCENEKIT_COMMAND_HANDLER_TYPE = "YokiFrame.SceneKitCommandHandler, YokiFrame.SceneKit";
@@ -50,9 +51,12 @@ namespace YokiFrame.Unity
             EnsureDefaultLogger();
             sEngineCore = CreateEngineCore(sYokiframeRoot, Dispatcher);
 
-            EnsureRuntimeSettingsStore();
-            EnsureDefaultResourceProvider();
-            KitStateSnapshotPublisher.RestoreAndPublishPoolMonitorPreferences(sYokiframeRoot);
+            if (BuiltinKitIntegrationEnabled)
+            {
+                EnsureRuntimeSettingsStore();
+                EnsureDefaultResourceProvider();
+                KitStateSnapshotPublisher.RestoreAndPublishPoolMonitorPreferences(sYokiframeRoot);
+            }
 
             RegisterCommandHandlers();
             LoadExtensions();
@@ -76,6 +80,10 @@ namespace YokiFrame.Unity
                 OpenCodeLocationWithDefaultEditor,
                 () => Dispatcher != null ? Dispatcher.BuildCommandCatalogJson() : BRIDGE_UNAVAILABLE_JSON,
                 () => BuildBridgeStatusDetailJson(sEngineCore)));
+
+            if (!BuiltinKitIntegrationEnabled)
+                return;
+
             Dispatcher.Register(new FsmKitCommandHandler());
             Dispatcher.Register(new UnityPoolKitCommandHandler());
             Dispatcher.Register(new UnityLogKitCommandHandler());
@@ -128,7 +136,8 @@ namespace YokiFrame.Unity
         private static void OnEditorUpdate()
         {
             EnsureDefaultLogger();
-            UnityManagedRuntimeBackendRegistration.EnsureRegistered();
+            if (BuiltinKitIntegrationEnabled)
+                UnityManagedRuntimeBackendRegistration.EnsureRegistered();
 
             var nowUtc = DateTime.UtcNow;
             if (ShouldPollCommandBridge(nowUtc))
@@ -142,7 +151,9 @@ namespace YokiFrame.Unity
 
             if (ShouldPoll(nowUtc, sLastKitSnapshotPublishUtc, TimeSpan.FromMilliseconds(KIT_SNAPSHOT_INTERVAL_MS)))
             {
-                KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
+                if (BuiltinKitIntegrationEnabled)
+                    KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
+
                 Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
                 sLastKitSnapshotPublishUtc = nowUtc;
             }
@@ -188,6 +199,9 @@ namespace YokiFrame.Unity
 
             LogKit.Warning("[YokiCommandBridge] 未初始化，请等待 DomainReload 完成后重试");
         }
+
+        private static bool BuiltinKitIntegrationEnabled =>
+            EditorPrefs.GetBool(BUILTIN_KIT_INTEGRATION_PREF_KEY, false);
 
         private static void ResetCommandDirectoryWatcher()
         {

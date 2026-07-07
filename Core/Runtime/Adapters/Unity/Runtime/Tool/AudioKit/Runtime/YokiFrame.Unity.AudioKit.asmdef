@@ -1,4 +1,4 @@
-{
+﻿{
     "name": "YokiFrame.Unity.AudioKit",
     "rootNamespace": "YokiFrame.Unity",
     "references": [
@@ -7,7 +7,9 @@
         "YokiFrame.Unity.Runtime",
         "UniTask"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

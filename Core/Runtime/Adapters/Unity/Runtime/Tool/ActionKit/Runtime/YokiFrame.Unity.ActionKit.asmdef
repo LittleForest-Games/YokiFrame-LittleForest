@@ -1,11 +1,13 @@
-{
+﻿{
     "name": "YokiFrame.Unity.ActionKit",
     "rootNamespace": "YokiFrame.Unity",
     "references": [
         "YokiFrame",
         "YokiFrame.ActionKit"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

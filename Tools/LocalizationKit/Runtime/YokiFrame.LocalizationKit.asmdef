@@ -1,4 +1,4 @@
-{
+﻿{
     "name":  "YokiFrame.LocalizationKit",
     "rootNamespace": "YokiFrame",
     "references":  [
@@ -7,9 +7,9 @@
                        "GUID:3c78026e8f7c6bb4da6cf8c58b8ddb02",
                        "UniTask"
                    ],
-    "includePlatforms":  [
-
-                         ],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms":  [
 
                          ],
