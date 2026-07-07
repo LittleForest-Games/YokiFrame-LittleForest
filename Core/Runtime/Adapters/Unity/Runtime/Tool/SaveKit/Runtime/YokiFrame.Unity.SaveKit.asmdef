@@ -1,4 +1,4 @@
-{
+﻿{
     "name": "YokiFrame.Unity.SaveKit",
     "rootNamespace": "YokiFrame.Unity",
     "references": [
@@ -6,7 +6,9 @@
         "YokiFrame.SaveKit",
         "YokiFrame.Unity.Runtime"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

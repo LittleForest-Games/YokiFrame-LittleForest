@@ -1,4 +1,4 @@
-{
+﻿{
     "name": "YokiFrame.Unity.AudioKit.FMOD",
     "rootNamespace": "YokiFrame.Unity",
     "references": [
@@ -8,7 +8,9 @@
         "YokiFrame.Unity.Runtime",
         "FMODUnity"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

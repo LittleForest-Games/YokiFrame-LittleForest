@@ -1,4 +1,4 @@
-{
+﻿{
     "name": "YokiFrame.Unity.Runtime",
     "rootNamespace": "YokiFrame.Unity",
     "references": [
@@ -7,7 +7,9 @@
         "YooAsset",
         "ZString"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

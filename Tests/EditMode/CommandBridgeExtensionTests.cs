@@ -275,6 +275,7 @@ namespace YokiFrame.Tests
             Assert.AreSame(ctx, MockExtension.SavedContext);
 
             var handler = new MockHandler("DynamicKit");
+            ctx.RegisterHandler(handler);
             var policyToken = ctx.RegisterPolicy(c => CommandBridgePolicyResult.Allow());
             var snapToken = ctx.RegisterSnapshot(new MockSnapshotPublisher());
 

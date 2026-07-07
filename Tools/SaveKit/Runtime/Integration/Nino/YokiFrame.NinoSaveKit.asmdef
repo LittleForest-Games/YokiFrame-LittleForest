@@ -1,11 +1,13 @@
-{
+﻿{
     "name": "YokiFrame.NinoSaveKit",
     "rootNamespace": "YokiFrame",
     "references": [
         "YokiFrame.SaveKit",
         "Nino.Core"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,
