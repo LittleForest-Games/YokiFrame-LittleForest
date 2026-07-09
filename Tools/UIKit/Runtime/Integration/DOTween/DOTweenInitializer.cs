@@ -21,7 +21,7 @@ namespace YokiFrame
         /// </summary>
         private const int DEFAULT_SEQUENCES_CAPACITY = 50;
         
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        // Little Forest fork profile: UIKit/DOTween integration is explicit-only.
         private static void Initialize()
         {
             // 预初始化 DOTween，设置合理的容量避免运行时扩容

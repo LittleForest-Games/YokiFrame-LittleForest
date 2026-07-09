@@ -6,7 +6,7 @@ namespace YokiFrame
     /// <summary>
     /// 在编辑器编译完成后继续处理待绑定的 UIKit 面板 Prefab。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: UIKit editor automation is explicit-only.
     internal static class UIKitPanelPrefabPostProcessor
     {
         static UIKitPanelPrefabPostProcessor()

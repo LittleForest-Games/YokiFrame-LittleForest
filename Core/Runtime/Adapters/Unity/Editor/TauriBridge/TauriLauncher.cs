@@ -24,7 +24,8 @@ namespace YokiFrame.Unity
         ///   2. 二进制缺失或源码更新时直接拉起源码窗口，不在打开窗口时自动 release build。
         ///   3. 发布准备时通过 Build Tauri Binary / Packager 显式生成 release 产物。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: the upstream Workbench launcher is explicit-only.
+    // Little Forest owns its control-panel launcher and must not register this update loop on load.
     public static partial class TauriLauncher
     {
         internal enum LaunchTarget

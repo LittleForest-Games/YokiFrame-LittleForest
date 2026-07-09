@@ -60,7 +60,6 @@ namespace YokiFrame.Unity
 
             RegisterCommandHandlers();
             LoadExtensions();
-            UnityEventStreamWriter.Init(sYokiframeRoot);
             ResetCommandDirectoryWatcher();
 
             EditorApplication.update += OnEditorUpdate;

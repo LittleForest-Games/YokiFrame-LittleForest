@@ -24,7 +24,7 @@ namespace YokiFrame.Unity
         private static bool sPlayModeHookRegistered;
 #endif
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        // Little Forest fork profile: ActionKit is unused and must be initialized explicitly.
         private static void InitializeBeforeSceneLoad()
         {
             Initialize();

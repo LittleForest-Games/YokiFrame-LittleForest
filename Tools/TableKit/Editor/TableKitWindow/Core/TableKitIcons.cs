@@ -9,7 +9,7 @@ namespace YokiFrame.Unity
     /// TableKit 独立图标生成器
     /// 动态生成矢量图标，避免 Emoji 字体兼容性问题
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: generate TableKit icons only when explicitly requested.
     internal static class TableKitIcons
     {
         #region 图标 ID 常量

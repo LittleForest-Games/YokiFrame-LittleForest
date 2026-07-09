@@ -12,9 +12,9 @@ namespace YokiFrame.Unity
     /// 2. 累积每个 FSM 的状态切换轨迹，注入 FsmKitCommandHandler.HistoryProvider
     /// 3. 通过 UnityEventStreamWriter 将事件推送给 Tauri 前端（文件 I/O，替换旧 WS 推送）
     ///
-    /// [InitializeOnLoad] 保证 Domain Reload 后自动重新挂接。
+    /// Little Forest fork 中仅在显式触碰该类型时挂接，不随 Domain Reload 自动注册。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: unused builtin Kit bridges must not auto-register.
     internal static class FsmKitEditorDataBridge
     {
         private static readonly Dictionary<string, List<TransitionRecord>> sHistory = new();

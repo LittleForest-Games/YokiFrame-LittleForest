@@ -11,7 +11,7 @@ namespace YokiFrame.Unity
         private static IEngineLogger sLogger;
         private static bool sInstalled;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        // Little Forest fork profile: LogKit runtime installation is explicit-only.
         private static void AutoInstall()
         {
             EnsureLoggerAdapterRegistered();
