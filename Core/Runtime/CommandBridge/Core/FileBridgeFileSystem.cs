@@ -156,6 +156,46 @@ namespace YokiFrame
         }
 
         /// <summary>
+        /// 在根目录约束下通过临时文件原子写入非持久性文本。
+        /// 数据会交给操作系统文件缓存，不强制刷新到物理磁盘。
+        /// 仅用于心跳等允许进程崩溃时丢失的派生状态。
+        /// </summary>
+        /// <param name="rootPath">允许写入的根目录。</param>
+        /// <param name="targetPath">目标文件路径。</param>
+        /// <param name="content">要写入的文本。</param>
+        public static void AtomicWriteVolatileTextInRoot(string rootPath, string targetPath, string content)
+        {
+            EnsurePathWithinRoot(rootPath, targetPath);
+            var dir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(dir))
+                CreateDirectoryInRoot(rootPath, dir);
+
+            var tempPath = targetPath + "." + Guid.NewGuid().ToString("N") + TEMP_EXTENSION;
+            EnsurePathWithinRoot(rootPath, tempPath);
+            try
+            {
+                using (var stream = new FileStream(
+                           tempPath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           4096,
+                           FileOptions.SequentialScan))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(content ?? string.Empty);
+                }
+
+                ReplaceFileInRoot(rootPath, tempPath, targetPath);
+            }
+            catch
+            {
+                TryDeleteInRoot(rootPath, tempPath);
+                throw;
+            }
+        }
+
+        /// <summary>
         /// 在根目录约束下尝试认领文件。
         /// </summary>
         /// <param name="rootPath">根目录路径。</param>

@@ -34,6 +34,8 @@ namespace YokiFrame.Unity
             new ProfilerMarker("YokiFrame.CommandBridge.PublishAllSnapshots");
         private static readonly ProfilerMarker sWriteHeartbeatProfilerMarker =
             new ProfilerMarker("YokiFrame.CommandBridge.WriteHeartbeat");
+        private static readonly ProfilerMarker sWriteHeartbeatWorkerProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.WriteHeartbeatWorker");
 
         private static YokiCommandBridgeCore sEngineCore;
         private static string sYokiframeRoot;
@@ -75,7 +77,9 @@ namespace YokiFrame.Unity
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeExtensions;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeCommandDirectoryWatcher;
+            AssemblyReloadEvents.beforeAssemblyReload += StopHeartbeatWriter;
             EditorApplication.quitting += DisposeCommandDirectoryWatcher;
+            EditorApplication.quitting += StopHeartbeatWriter;
             EditorApplication.quitting += DisposeExtensions;
 
             WriteEngineRegistry();
@@ -144,6 +148,7 @@ namespace YokiFrame.Unity
 
         private static void OnEditorUpdate()
         {
+            ReportHeartbeatWriteError();
             EnsureDefaultLogger();
             if (BuiltinKitIntegrationEnabled)
                 UnityManagedRuntimeBackendRegistration.EnsureRegistered();
