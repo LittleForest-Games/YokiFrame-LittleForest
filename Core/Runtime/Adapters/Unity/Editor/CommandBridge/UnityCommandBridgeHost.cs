@@ -16,6 +16,7 @@ namespace YokiFrame.Unity
         private const int HEARTBEAT_INTERVAL_MS = 2000;
         private const int POLL_MIN_INTERVAL_MS = 100;
         private const int POLL_MAX_INTERVAL_MS = 1000;
+        private const int POLL_WATCHDOG_INTERVAL_MS = 30000;
         private const int KIT_SNAPSHOT_INTERVAL_MS = 1000;
         private const string ENGINE_ID = "unity-editor";
         private const string BRIDGE_UNAVAILABLE_JSON = "{\"available\":false,\"reason\":\"core is not initialized\"}";
@@ -44,6 +45,7 @@ namespace YokiFrame.Unity
             new CommandBridgePollBackoff(POLL_MIN_INTERVAL_MS, POLL_MAX_INTERVAL_MS);
         private static FileSystemWatcher sCommandDirectoryWatcher;
         private static volatile bool sCommandDirectoryChanged;
+        private static bool sCommandBridgeNeedsFollowUpPoll;
 
         /// <summary>
         /// engine-scoped 文件桥使用的共享命令分发器。
@@ -77,7 +79,7 @@ namespace YokiFrame.Unity
             EditorApplication.quitting += DisposeExtensions;
 
             WriteEngineRegistry();
-            PollCoresProfiled();
+            PollCommandBridgeAndRecord(DateTime.UtcNow);
         }
 
         private static void RegisterCommandHandlers()
@@ -148,13 +150,7 @@ namespace YokiFrame.Unity
 
             var nowUtc = DateTime.UtcNow;
             if (ShouldPollCommandBridge(nowUtc))
-            {
-                sCommandDirectoryChanged = false;
-                PollCoresProfiled();
-                sPollBackoff.RecordPollResult(sEngineCore != default &&
-                    (sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive));
-                sLastPollUtc = nowUtc;
-            }
+                PollCommandBridgeAndRecord(nowUtc);
 
             if (ShouldPoll(nowUtc, sLastKitSnapshotPublishUtc, TimeSpan.FromMilliseconds(KIT_SNAPSHOT_INTERVAL_MS)))
             {
@@ -211,16 +207,45 @@ namespace YokiFrame.Unity
                 return true;
             }
 
-            return ShouldPoll(nowUtc, sLastPollUtc, TimeSpan.FromMilliseconds(sPollBackoff.CurrentIntervalMs));
+            if (sCommandBridgeNeedsFollowUpPoll || !IsCommandDirectoryWatcherActive())
+            {
+                return ShouldPoll(
+                    nowUtc,
+                    sLastPollUtc,
+                    TimeSpan.FromMilliseconds(sPollBackoff.CurrentIntervalMs));
+            }
+
+            // FileSystemWatcher 正常时不再每秒扫描空目录。低频 watchdog 只负责补偿漏事件，
+            // 并让 processing 中的超时命令仍能被恢复。
+            return ShouldPoll(
+                nowUtc,
+                sLastPollUtc,
+                TimeSpan.FromMilliseconds(POLL_WATCHDOG_INTERVAL_MS));
+        }
+
+        private static void PollCommandBridgeAndRecord(DateTime nowUtc)
+        {
+            // 先清标志，轮询期间发生的新文件事件会再次置位，避免丢失竞态窗口。
+            sCommandDirectoryChanged = false;
+            PollCoresProfiled();
+
+            var hadActivity = sEngineCore != default &&
+                (sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive);
+            sCommandBridgeNeedsFollowUpPoll = hadActivity;
+            sPollBackoff.RecordPollResult(hadActivity);
+            sLastPollUtc = nowUtc;
+        }
+
+        private static bool IsCommandDirectoryWatcherActive()
+        {
+            return sCommandDirectoryWatcher != null && sCommandDirectoryWatcher.EnableRaisingEvents;
         }
 
         public static void PollNow()
         {
             if (sEngineCore != default)
             {
-                PollCoresProfiled();
-                sPollBackoff.RecordPollResult(sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive);
-                sLastPollUtc = DateTime.UtcNow;
+                PollCommandBridgeAndRecord(DateTime.UtcNow);
                 return;
             }
 
