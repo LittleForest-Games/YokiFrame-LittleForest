@@ -11,7 +11,7 @@ namespace YokiFrame.Unity
     /// <summary>
     /// EventKit 编辑器数据桥：把运行时 EventKit hook 转换为 snapshot 与 event_update。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: unused builtin Kit bridges must not auto-register.
     internal static class EventKitEditorDataBridge
     {
         private const string ENGINE_ID = "unity-editor";

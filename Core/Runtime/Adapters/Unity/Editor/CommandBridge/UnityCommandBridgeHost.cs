@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using Unity.Profiling;
 
 namespace YokiFrame.Unity
 {
@@ -15,6 +16,7 @@ namespace YokiFrame.Unity
         private const int HEARTBEAT_INTERVAL_MS = 2000;
         private const int POLL_MIN_INTERVAL_MS = 100;
         private const int POLL_MAX_INTERVAL_MS = 1000;
+        private const int POLL_WATCHDOG_INTERVAL_MS = 30000;
         private const int KIT_SNAPSHOT_INTERVAL_MS = 1000;
         private const string ENGINE_ID = "unity-editor";
         private const string BRIDGE_UNAVAILABLE_JSON = "{\"available\":false,\"reason\":\"core is not initialized\"}";
@@ -26,6 +28,15 @@ namespace YokiFrame.Unity
         private const string UIKIT_COMMAND_HANDLER_TYPE = "YokiFrame.UnityUIKitCommandHandler, YokiFrame.UIKit.Editor";
         private const string ACTIONKIT_COMMAND_HANDLER_TYPE = "YokiFrame.ActionKitCommandHandler, YokiFrame.ActionKit";
 
+        private static readonly ProfilerMarker sPollCoresProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.PollCores");
+        private static readonly ProfilerMarker sPublishSnapshotsProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.PublishAllSnapshots");
+        private static readonly ProfilerMarker sWriteHeartbeatProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.WriteHeartbeat");
+        private static readonly ProfilerMarker sWriteHeartbeatWorkerProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.WriteHeartbeatWorker");
+
         private static YokiCommandBridgeCore sEngineCore;
         private static string sYokiframeRoot;
         private static DateTime sLastHeartbeat;
@@ -36,6 +47,7 @@ namespace YokiFrame.Unity
             new CommandBridgePollBackoff(POLL_MIN_INTERVAL_MS, POLL_MAX_INTERVAL_MS);
         private static FileSystemWatcher sCommandDirectoryWatcher;
         private static volatile bool sCommandDirectoryChanged;
+        private static bool sCommandBridgeNeedsFollowUpPoll;
 
         /// <summary>
         /// engine-scoped 文件桥使用的共享命令分发器。
@@ -60,17 +72,18 @@ namespace YokiFrame.Unity
 
             RegisterCommandHandlers();
             LoadExtensions();
-            UnityEventStreamWriter.Init(sYokiframeRoot);
             ResetCommandDirectoryWatcher();
 
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeExtensions;
             AssemblyReloadEvents.beforeAssemblyReload += DisposeCommandDirectoryWatcher;
+            AssemblyReloadEvents.beforeAssemblyReload += StopHeartbeatWriter;
             EditorApplication.quitting += DisposeCommandDirectoryWatcher;
+            EditorApplication.quitting += StopHeartbeatWriter;
             EditorApplication.quitting += DisposeExtensions;
 
             WriteEngineRegistry();
-            PollCores();
+            PollCommandBridgeAndRecord(DateTime.UtcNow);
         }
 
         private static void RegisterCommandHandlers()
@@ -135,34 +148,49 @@ namespace YokiFrame.Unity
 
         private static void OnEditorUpdate()
         {
+            ReportHeartbeatWriteError();
             EnsureDefaultLogger();
             if (BuiltinKitIntegrationEnabled)
                 UnityManagedRuntimeBackendRegistration.EnsureRegistered();
 
             var nowUtc = DateTime.UtcNow;
             if (ShouldPollCommandBridge(nowUtc))
-            {
-                sCommandDirectoryChanged = false;
-                PollCores();
-                sPollBackoff.RecordPollResult(sEngineCore != default &&
-                    (sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive));
-                sLastPollUtc = nowUtc;
-            }
+                PollCommandBridgeAndRecord(nowUtc);
 
             if (ShouldPoll(nowUtc, sLastKitSnapshotPublishUtc, TimeSpan.FromMilliseconds(KIT_SNAPSHOT_INTERVAL_MS)))
             {
-                if (BuiltinKitIntegrationEnabled)
-                    KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
-
-                Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
+                PublishSnapshotsProfiled();
                 sLastKitSnapshotPublishUtc = nowUtc;
             }
 
             if ((nowUtc - sLastHeartbeat).TotalMilliseconds >= HEARTBEAT_INTERVAL_MS)
             {
                 sLastHeartbeat = nowUtc;
-                WriteHeartbeat();
+                WriteHeartbeatProfiled();
             }
+        }
+
+        private static void PollCoresProfiled()
+        {
+            using (sPollCoresProfilerMarker.Auto())
+                PollCores();
+        }
+
+        private static void PublishSnapshotsProfiled()
+        {
+            using (sPublishSnapshotsProfilerMarker.Auto())
+            {
+                if (BuiltinKitIntegrationEnabled)
+                    KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
+
+                Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
+            }
+        }
+
+        private static void WriteHeartbeatProfiled()
+        {
+            using (sWriteHeartbeatProfilerMarker.Auto())
+                WriteHeartbeat();
         }
 
         internal static bool ShouldPoll(DateTime nowUtc, DateTime? lastPollUtc, TimeSpan interval)
@@ -184,16 +212,45 @@ namespace YokiFrame.Unity
                 return true;
             }
 
-            return ShouldPoll(nowUtc, sLastPollUtc, TimeSpan.FromMilliseconds(sPollBackoff.CurrentIntervalMs));
+            if (sCommandBridgeNeedsFollowUpPoll || !IsCommandDirectoryWatcherActive())
+            {
+                return ShouldPoll(
+                    nowUtc,
+                    sLastPollUtc,
+                    TimeSpan.FromMilliseconds(sPollBackoff.CurrentIntervalMs));
+            }
+
+            // FileSystemWatcher 正常时不再每秒扫描空目录。低频 watchdog 只负责补偿漏事件，
+            // 并让 processing 中的超时命令仍能被恢复。
+            return ShouldPoll(
+                nowUtc,
+                sLastPollUtc,
+                TimeSpan.FromMilliseconds(POLL_WATCHDOG_INTERVAL_MS));
+        }
+
+        private static void PollCommandBridgeAndRecord(DateTime nowUtc)
+        {
+            // 先清标志，轮询期间发生的新文件事件会再次置位，避免丢失竞态窗口。
+            sCommandDirectoryChanged = false;
+            PollCoresProfiled();
+
+            var hadActivity = sEngineCore != default &&
+                (sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive);
+            sCommandBridgeNeedsFollowUpPoll = hadActivity;
+            sPollBackoff.RecordPollResult(hadActivity);
+            sLastPollUtc = nowUtc;
+        }
+
+        private static bool IsCommandDirectoryWatcherActive()
+        {
+            return sCommandDirectoryWatcher != null && sCommandDirectoryWatcher.EnableRaisingEvents;
         }
 
         public static void PollNow()
         {
             if (sEngineCore != default)
             {
-                PollCores();
-                sPollBackoff.RecordPollResult(sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive);
-                sLastPollUtc = DateTime.UtcNow;
+                PollCommandBridgeAndRecord(DateTime.UtcNow);
                 return;
             }
 

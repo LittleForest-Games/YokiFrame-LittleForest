@@ -15,7 +15,7 @@ namespace YokiFrame.Unity
     /// <summary>
     /// Unity 侧可选依赖宏定义服务，负责把包环境同步到 YokiFrame 编译宏。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: dependency defines refresh only through the explicit menu command.
     public static class DependencyDefineService
     {
         /// <summary>
@@ -153,22 +153,6 @@ namespace YokiFrame.Unity
                 return true;
 
             return false;
-        }
-
-        private sealed class AssetPostprocessorHook : AssetPostprocessor
-        {
-            private static void OnPostprocessAllAssets(
-                string[] importedAssets,
-                string[] deletedAssets,
-                string[] movedAssets,
-                string[] movedFromAssetPaths)
-            {
-                if (HasDependencyMarkerAsset(importedAssets) || HasDependencyMarkerAsset(deletedAssets) ||
-                    HasDependencyMarkerAsset(movedAssets) || HasDependencyMarkerAsset(movedFromAssetPaths))
-                {
-                    ScheduleRefreshDefines();
-                }
-            }
         }
 
         private static void ScheduleRefreshDefines()

@@ -204,14 +204,14 @@ namespace YokiFrame.Unity
             sIsQuitting = false;
         }
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        // Little Forest fork profile: unused SingletonKit lifecycle is not registered automatically.
         private static void ResetForSubsystemRegistration()
         {
             sIsQuitting = false;
         }
 
 #if UNITY_EDITOR
-        [UnityEditor.InitializeOnLoadMethod]
+        // Little Forest fork profile: unused SingletonKit editor hooks are explicit-only.
         private static void RegisterEditorHooks()
         {
             UnityEditor.EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;

@@ -14,7 +14,8 @@ namespace YokiFrame.Unity
     /// 替代旧的 YokiWsClient.EnqueuePush（WebSocket 推送）。
     /// Domain Reload 后自动重新初始化。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: native event streaming is explicit-only.
+    // Do not restore InitializeOnLoad; Little Forest uses its own telemetry/control-panel path.
     internal static class UnityEventStreamWriter
     {
         private static string sEventsDir;

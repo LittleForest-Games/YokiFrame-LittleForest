@@ -10,7 +10,7 @@ namespace YokiFrame.Unity
     /// Kit 图标生成器
     /// 在编辑器中动态生成矢量风格图标，避免 Emoji 字体兼容性问题
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: generate builtin Kit icons only when explicitly requested.
     public static partial class KitIconGenerator
     {
         private static readonly Dictionary<string, Texture2D> sIconCache = new();

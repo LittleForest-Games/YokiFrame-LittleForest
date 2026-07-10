@@ -7,7 +7,6 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.ShortcutManagement;
 using UnityEngine;
 
 [assembly: InternalsVisibleTo("YokiFrame.Unity.Editor.Tests")]
@@ -25,7 +24,8 @@ namespace YokiFrame.Unity
         ///   2. 二进制缺失或源码更新时直接拉起源码窗口，不在打开窗口时自动 release build。
         ///   3. 发布准备时通过 Build Tauri Binary / Packager 显式生成 release 产物。
     /// </summary>
-    [InitializeOnLoad]
+    // Little Forest fork profile: the upstream Workbench launcher is explicit-only.
+    // Little Forest owns its control-panel launcher and must not register this update loop on load.
     public static partial class TauriLauncher
     {
         internal enum LaunchTarget
@@ -54,9 +54,6 @@ namespace YokiFrame.Unity
         private static System.Diagnostics.Process sTauriProcess;
         private static bool sOutdatedBinaryWarningShown;
         private static bool sPreloadAttempted;
-#if UNITY_6000_0_OR_NEWER
-        private static readonly GlobalLaunchShortcutContext sGlobalLaunchShortcutContext = new GlobalLaunchShortcutContext();
-#endif
         private static DateTime sEditorLoadUtc;
 
         private const string PANEL_REQUEST_DIR = "panel";
@@ -198,9 +195,6 @@ namespace YokiFrame.Unity
         static TauriLauncher()
         {
             sEditorLoadUtc = DateTime.UtcNow;
-#if UNITY_6000_0_OR_NEWER
-            ShortcutManager.RegisterContext(sGlobalLaunchShortcutContext);
-#endif
             EditorApplication.quitting += OnEditorQuitting;
             EditorApplication.update += OnEditorUpdate;
         }
@@ -816,12 +810,7 @@ namespace YokiFrame.Unity
 
         private static bool ValidateRestart() => IsRunning;
 
-        [MenuItem("YokiFrame/编辑器窗口/启动窗口 %e", false, 99)]
-#if UNITY_6000_0_OR_NEWER
-        [Shortcut("YokiFrame/Editor UI/Launch", typeof(GlobalLaunchShortcutContext), KeyCode.E, ShortcutModifiers.Action)]
-#else
-        [Shortcut("YokiFrame/Editor UI/Launch", KeyCode.E, ShortcutModifiers.Action)]
-#endif
+        [MenuItem("YokiFrame/编辑器窗口/启动窗口", false, 99)]
         private static void MenuLaunchWindow()
         {
             LogKit.Info("[TauriLauncher] 正在打开 YokiFrame 工作台...");
@@ -853,16 +842,6 @@ namespace YokiFrame.Unity
             Menu.SetChecked("YokiFrame/编辑器窗口/启动时预热（可选）", AutoPreloadEnabled);
             return true;
         }
-
-#if UNITY_6000_0_OR_NEWER
-        public sealed class GlobalLaunchShortcutContext : IShortcutContext
-        {
-            public bool active
-            {
-                get { return true; }
-            }
-        }
-#endif
 
         #region Cross-Platform Build
 
