@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+using Unity.Profiling;
 
 namespace YokiFrame.Unity
 {
@@ -25,6 +26,13 @@ namespace YokiFrame.Unity
         private const string SPATIALKIT_COMMAND_HANDLER_TYPE = "YokiFrame.SpatialKitCommandHandler, YokiFrame.SpatialKit";
         private const string UIKIT_COMMAND_HANDLER_TYPE = "YokiFrame.UnityUIKitCommandHandler, YokiFrame.UIKit.Editor";
         private const string ACTIONKIT_COMMAND_HANDLER_TYPE = "YokiFrame.ActionKitCommandHandler, YokiFrame.ActionKit";
+
+        private static readonly ProfilerMarker sPollCoresProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.PollCores");
+        private static readonly ProfilerMarker sPublishSnapshotsProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.PublishAllSnapshots");
+        private static readonly ProfilerMarker sWriteHeartbeatProfilerMarker =
+            new ProfilerMarker("YokiFrame.CommandBridge.WriteHeartbeat");
 
         private static YokiCommandBridgeCore sEngineCore;
         private static string sYokiframeRoot;
@@ -69,7 +77,7 @@ namespace YokiFrame.Unity
             EditorApplication.quitting += DisposeExtensions;
 
             WriteEngineRegistry();
-            PollCores();
+            PollCoresProfiled();
         }
 
         private static void RegisterCommandHandlers()
@@ -142,7 +150,7 @@ namespace YokiFrame.Unity
             if (ShouldPollCommandBridge(nowUtc))
             {
                 sCommandDirectoryChanged = false;
-                PollCores();
+                PollCoresProfiled();
                 sPollBackoff.RecordPollResult(sEngineCore != default &&
                     (sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive));
                 sLastPollUtc = nowUtc;
@@ -150,18 +158,38 @@ namespace YokiFrame.Unity
 
             if (ShouldPoll(nowUtc, sLastKitSnapshotPublishUtc, TimeSpan.FromMilliseconds(KIT_SNAPSHOT_INTERVAL_MS)))
             {
-                if (BuiltinKitIntegrationEnabled)
-                    KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
-
-                Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
+                PublishSnapshotsProfiled();
                 sLastKitSnapshotPublishUtc = nowUtc;
             }
 
             if ((nowUtc - sLastHeartbeat).TotalMilliseconds >= HEARTBEAT_INTERVAL_MS)
             {
                 sLastHeartbeat = nowUtc;
-                WriteHeartbeat();
+                WriteHeartbeatProfiled();
             }
+        }
+
+        private static void PollCoresProfiled()
+        {
+            using (sPollCoresProfilerMarker.Auto())
+                PollCores();
+        }
+
+        private static void PublishSnapshotsProfiled()
+        {
+            using (sPublishSnapshotsProfilerMarker.Auto())
+            {
+                if (BuiltinKitIntegrationEnabled)
+                    KitStateSnapshotPublisher.TryPublishAll(sYokiframeRoot);
+
+                Dispatcher?.PublishAllSnapshots(sYokiframeRoot);
+            }
+        }
+
+        private static void WriteHeartbeatProfiled()
+        {
+            using (sWriteHeartbeatProfilerMarker.Auto())
+                WriteHeartbeat();
         }
 
         internal static bool ShouldPoll(DateTime nowUtc, DateTime? lastPollUtc, TimeSpan interval)
@@ -190,7 +218,7 @@ namespace YokiFrame.Unity
         {
             if (sEngineCore != default)
             {
-                PollCores();
+                PollCoresProfiled();
                 sPollBackoff.RecordPollResult(sEngineCore.LastPollHadActivity || sEngineCore.BackpressureActive);
                 sLastPollUtc = DateTime.UtcNow;
                 return;
