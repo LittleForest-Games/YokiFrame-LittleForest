@@ -392,6 +392,42 @@ namespace YokiFrame.Tests
         }
 
         [Test]
+        public void DrainProfiled_BracketsOnlyLogicalDispatch()
+        {
+            var now = DateTime.UtcNow;
+            using (var broker =
+                   new LocalIpcRequestBroker(
+                       "unity-editor",
+                       SessionId))
+            {
+                var admitted = broker.Admit(
+                    LocalIpcProtocolTests.BuildRequest(
+                        "profiled_1",
+                        now,
+                        5000),
+                    Context("connection_1", now),
+                    now);
+                Assert.IsTrue(admitted.Admitted);
+                var profiler =
+                    new RecordingDispatchProfiler(mHandler);
+
+                Assert.AreEqual(
+                    1,
+                    broker.DrainProfiled(
+                        mDispatcher,
+                        16,
+                        TimeSpan.Zero,
+                        profiler,
+                        () => now));
+
+                Assert.AreEqual(1, profiler.BeginCount);
+                Assert.AreEqual(1, profiler.EndCount);
+                Assert.AreEqual(1, mHandler.CallCount);
+                admitted.Pending.Dispose();
+            }
+        }
+
+        [Test]
         public void DuplicateInflightThenCompleted_NeverRedispatches()
         {
             var now = DateTime.UtcNow;
@@ -843,6 +879,33 @@ namespace YokiFrame.Tests
                 if (!mRelease.Wait(TimeSpan.FromSeconds(5)))
                     throw new TimeoutException("Test release timed out.");
                 return "{\"ok\":true}";
+            }
+        }
+
+        private sealed class RecordingDispatchProfiler :
+            ILocalIpcDispatchProfiler
+        {
+            private readonly ProbeHandler mHandler;
+
+            internal RecordingDispatchProfiler(ProbeHandler handler)
+            {
+                mHandler = handler;
+            }
+
+            internal int BeginCount { get; private set; }
+
+            internal int EndCount { get; private set; }
+
+            public void Begin()
+            {
+                Assert.AreEqual(0, mHandler.CallCount);
+                BeginCount++;
+            }
+
+            public void End()
+            {
+                Assert.AreEqual(1, mHandler.CallCount);
+                EndCount++;
             }
         }
     }
