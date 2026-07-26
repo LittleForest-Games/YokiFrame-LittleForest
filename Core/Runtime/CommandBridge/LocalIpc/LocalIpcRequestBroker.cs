@@ -6,6 +6,17 @@ using System.Threading;
 namespace YokiFrame
 {
     /// <summary>
+    /// Package-internal dispatch boundary instrumentation. The Local IPC core
+    /// owns the exact dispatch boundary; engine adapters own their profiler.
+    /// </summary>
+    internal interface ILocalIpcDispatchProfiler
+    {
+        void Begin();
+
+        void End();
+    }
+
+    /// <summary>
     /// Thread-safe admission, backpressure, duplicate suppression and
     /// main-thread dispatch owner for Local IPC requests.
     /// </summary>
@@ -267,6 +278,46 @@ namespace YokiFrame
             TimeSpan timeBudget,
             Func<DateTime> utcNow = null)
         {
+            return DrainCore(
+                dispatcher,
+                maxCount,
+                timeBudget,
+                null,
+                utcNow);
+        }
+
+        /// <summary>
+        /// Drains admitted work while exposing only the logical dispatch
+        /// boundary to a package-owned engine profiler.
+        /// </summary>
+        internal int DrainProfiled(
+            KitCommandDispatcher dispatcher,
+            int maxCount,
+            TimeSpan timeBudget,
+            ILocalIpcDispatchProfiler dispatchProfiler,
+            Func<DateTime> utcNow = null)
+        {
+            if (dispatchProfiler == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(dispatchProfiler));
+            }
+
+            return DrainCore(
+                dispatcher,
+                maxCount,
+                timeBudget,
+                dispatchProfiler,
+                utcNow);
+        }
+
+        private int DrainCore(
+            KitCommandDispatcher dispatcher,
+            int maxCount,
+            TimeSpan timeBudget,
+            ILocalIpcDispatchProfiler dispatchProfiler,
+            Func<DateTime> utcNow)
+        {
             if (dispatcher == null)
                 throw new ArgumentNullException(nameof(dispatcher));
             if (maxCount <= 0)
@@ -316,9 +367,18 @@ namespace YokiFrame
                 string response;
                 try
                 {
-                    response = dispatcher.Dispatch(
-                        pending.CommandJson,
-                        pending.DispatchContext);
+                    dispatchProfiler?.Begin();
+                    try
+                    {
+                        response = dispatcher.Dispatch(
+                            pending.CommandJson,
+                            pending.DispatchContext);
+                    }
+                    finally
+                    {
+                        dispatchProfiler?.End();
+                    }
+
                     response = LocalIpcProtocol.DecorateResponse(
                         response,
                         mHostSessionId);

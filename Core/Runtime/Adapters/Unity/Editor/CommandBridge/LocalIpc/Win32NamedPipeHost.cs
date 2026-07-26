@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Threading;
+using Unity.Profiling;
 
 namespace YokiFrame.Unity
 {
@@ -19,6 +20,12 @@ namespace YokiFrame.Unity
         private const int MainThreadDrainBudgetMs = 4;
         private const int CompletionPollMs = 100;
 
+        private static readonly ProfilerMarker sMainThreadDrainProfilerMarker =
+            new ProfilerMarker("LocalIpcBridge.MainThreadDrain");
+        private static readonly ProfilerMarker sActionHandlerProfilerMarker =
+            new ProfilerMarker("LocalIpcBridge.ActionHandler");
+        private static readonly ILocalIpcDispatchProfiler sDispatchProfiler =
+            new UnityDispatchProfiler();
         private static readonly UTF8Encoding sStrictUtf8 =
             new UTF8Encoding(false, true);
 
@@ -723,22 +730,26 @@ namespace YokiFrame.Unity
 
         private void DrainOnMainThread()
         {
-            Interlocked.Exchange(ref mDrainScheduled, 0);
-            FlushDiagnostics();
-            if (Volatile.Read(ref mStopping) != 0 ||
-                mBroker == null)
+            using (sMainThreadDrainProfilerMarker.Auto())
             {
-                return;
-            }
+                Interlocked.Exchange(ref mDrainScheduled, 0);
+                FlushDiagnostics();
+                if (Volatile.Read(ref mStopping) != 0 ||
+                    mBroker == null)
+                {
+                    return;
+                }
 
-            mBroker.Drain(
-                mDispatcher,
-                MainThreadDrainMaxCount,
-                TimeSpan.FromMilliseconds(
-                    MainThreadDrainBudgetMs));
-            FlushDiagnostics();
-            if (mBroker.QueuedCount > 0)
-                RequestMainThreadDrain();
+                mBroker.DrainProfiled(
+                    mDispatcher,
+                    MainThreadDrainMaxCount,
+                    TimeSpan.FromMilliseconds(
+                        MainThreadDrainBudgetMs),
+                    sDispatchProfiler);
+                FlushDiagnostics();
+                if (mBroker.QueuedCount > 0)
+                    RequestMainThreadDrain();
+            }
         }
 
         private void PostMainThread(Action action)
@@ -780,6 +791,20 @@ namespace YokiFrame.Unity
                 }
 
                 mMainThreadDiagnosticSink(message);
+            }
+        }
+
+        private sealed class UnityDispatchProfiler :
+            ILocalIpcDispatchProfiler
+        {
+            public void Begin()
+            {
+                sActionHandlerProfilerMarker.Begin();
+            }
+
+            public void End()
+            {
+                sActionHandlerProfilerMarker.End();
             }
         }
 
