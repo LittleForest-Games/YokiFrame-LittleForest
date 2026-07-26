@@ -16,8 +16,6 @@ namespace YokiFrame.Unity
         private readonly ConcurrentQueue<Action> mActions =
             new ConcurrentQueue<Action>();
         private readonly object mLifecycleSync = new object();
-        private readonly int mMainThreadId =
-            Thread.CurrentThread.ManagedThreadId;
         private readonly EditorApplication.CallbackFunction mDrainCallback;
         private readonly CallDelayedDelegate mCallDelayed;
         private Action mCancelScheduledDrain;
@@ -57,12 +55,10 @@ namespace YokiFrame.Unity
             if (Volatile.Read(ref mDisposed) != 0)
                 return;
 
-            if (Thread.CurrentThread.ManagedThreadId == mMainThreadId)
-            {
-                action();
-                return;
-            }
-
+            // Always cross the one-shot Editor update boundary, including
+            // posts made while draining on the main thread. Inline execution
+            // would let a continuation recursively drain the whole queue in
+            // one Editor frame and bypass the per-drain budget.
             mActions.Enqueue(action);
             ScheduleOneShotUpdate();
         }
