@@ -42,7 +42,10 @@ namespace YokiFrame.Unity
                 try
                 {
                     var extension = (IYokiFrameCommandBridgeExtension)Activator.CreateInstance(type, true);
-                    var context = new CommandBridgeExtensionContext(Dispatcher);
+                    var context = new CommandBridgeExtensionContext(
+                        Dispatcher,
+                        sConnectionRegistry,
+                        sCommandTransportMode);
                     extension.Register(context);
                     sLoadedExtensions.Add(extension);
                     sExtensionTokens.AddRange(context.Tokens);

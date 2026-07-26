@@ -17,6 +17,28 @@ namespace YokiFrame
         /// <param name="action">目标动作名称。</param>
         /// <param name="payloadJson">命令载荷 JSON。</param>
         public CommandBridgeCommand(string requestId, string engineId, string source, string kit, string action, string payloadJson)
+            : this(
+                requestId,
+                engineId,
+                source,
+                kit,
+                action,
+                payloadJson,
+                CommandBridgeDispatchContext.FileBridge)
+        {
+        }
+
+        /// <summary>
+        /// 创建带 transport-neutral dispatch context 的标准命令上下文。
+        /// </summary>
+        public CommandBridgeCommand(
+            string requestId,
+            string engineId,
+            string source,
+            string kit,
+            string action,
+            string payloadJson,
+            CommandBridgeDispatchContext dispatchContext)
         {
             RequestId = requestId ?? string.Empty;
             EngineId = engineId ?? string.Empty;
@@ -30,6 +52,8 @@ namespace YokiFrame
             CreatedAtUtc = DateTime.MinValue;
             TimeoutMs = 0;
             DeadlineUtc = DateTime.MaxValue;
+            DispatchContext =
+                dispatchContext ?? CommandBridgeDispatchContext.FileBridge;
         }
 
         /// <summary>
@@ -46,6 +70,34 @@ namespace YokiFrame
         /// <param name="timeoutMs">命令执行超时毫秒；0 表示无超时（DeadlineUtc 设为 DateTime.MaxValue）。</param>
         public CommandBridgeCommand(string requestId, string engineId, string source, string kit, string action, string payloadJson,
             string protocolVersion, DateTime createdAtUtc, int timeoutMs)
+            : this(
+                requestId,
+                engineId,
+                source,
+                kit,
+                action,
+                payloadJson,
+                protocolVersion,
+                createdAtUtc,
+                timeoutMs,
+                CommandBridgeDispatchContext.FileBridge)
+        {
+        }
+
+        /// <summary>
+        /// 创建带 envelope 与 transport-neutral dispatch context 的标准命令上下文。
+        /// </summary>
+        public CommandBridgeCommand(
+            string requestId,
+            string engineId,
+            string source,
+            string kit,
+            string action,
+            string payloadJson,
+            string protocolVersion,
+            DateTime createdAtUtc,
+            int timeoutMs,
+            CommandBridgeDispatchContext dispatchContext)
         {
             RequestId = requestId ?? string.Empty;
             EngineId = engineId ?? string.Empty;
@@ -59,6 +111,8 @@ namespace YokiFrame
             TimeoutMs = timeoutMs;
             // timeoutMs=0 表示无超时，DeadlineUtc 设为 DateTime.MaxValue，IsExpired 永远为 false。
             DeadlineUtc = timeoutMs > 0 ? createdAtUtc.AddMilliseconds(timeoutMs) : DateTime.MaxValue;
+            DispatchContext =
+                dispatchContext ?? CommandBridgeDispatchContext.FileBridge;
         }
 
         /// <summary>
@@ -112,6 +166,11 @@ namespace YokiFrame
         /// <see cref="TimeoutMs"/> 为 0 时为 <see cref="DateTime.MaxValue"/>（永不超时）。
         /// </summary>
         public DateTime DeadlineUtc { get; }
+
+        /// <summary>
+        /// Transport-neutral request/session correlation.
+        /// </summary>
+        public CommandBridgeDispatchContext DispatchContext { get; }
 
         /// <summary>
         /// 检查命令是否已过期。
