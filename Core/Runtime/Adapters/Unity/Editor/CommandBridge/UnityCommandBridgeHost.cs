@@ -47,6 +47,7 @@ namespace YokiFrame.Unity
             LOCAL_IPC_TRANSPORT_MODE;
         private static string sTransportInitializationError;
         private static DateTime? sLastKitSnapshotPublishUtc;
+        private static bool sSnapshotPublishingActive;
 
         /// <summary>
         /// engine-scoped Local IPC Host 使用的共享命令分发器。
@@ -80,14 +81,18 @@ namespace YokiFrame.Unity
             RegisterCommandHandlers();
             LoadExtensions();
             StartLocalIpcTransport();
+            StartSnapshotPublishingIfRequired();
 
-            EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload +=
                 DisposeCommandTransport;
+            AssemblyReloadEvents.beforeAssemblyReload +=
+                DisposeSnapshotPublishing;
             AssemblyReloadEvents.beforeAssemblyReload +=
                 DisposeExtensions;
             EditorApplication.quitting +=
                 DisposeCommandTransport;
+            EditorApplication.quitting +=
+                DisposeSnapshotPublishing;
             EditorApplication.quitting +=
                 DisposeExtensions;
 
@@ -167,6 +172,29 @@ namespace YokiFrame.Unity
                 UnityRuntimeSettingsBridge.GetLogKitOptions(
                     UnityLogKitOptions.CreateDefault()),
                 LogKit.GetLogger());
+        }
+
+        private static void StartSnapshotPublishingIfRequired()
+        {
+            if (!BuiltinKitIntegrationEnabled &&
+                (Dispatcher == null ||
+                 Dispatcher.SnapshotPublishers.Count == 0))
+            {
+                return;
+            }
+
+            EditorApplication.update += OnEditorUpdate;
+            sSnapshotPublishingActive = true;
+        }
+
+        private static void DisposeSnapshotPublishing()
+        {
+            if (!sSnapshotPublishingActive)
+                return;
+
+            EditorApplication.update -= OnEditorUpdate;
+            sSnapshotPublishingActive = false;
+            sLastKitSnapshotPublishUtc = null;
         }
 
         private static void OnEditorUpdate()
