@@ -16,22 +16,32 @@ namespace YokiFrame.Unity
         private readonly ConcurrentQueue<Action> mActions =
             new ConcurrentQueue<Action>();
         private readonly object mLifecycleSync = new object();
+        private readonly EditorApplication.CallbackFunction
+            mRegisterDrainCallback;
         private readonly EditorApplication.CallbackFunction mDrainCallback;
         private readonly CallDelayedDelegate mCallDelayed;
-        private Action mCancelScheduledDrain;
+        private readonly RegisterUpdateDelegate mRegisterUpdate;
+        private Action mCancelScheduledRegistration;
+        private Action mCancelRegisteredUpdate;
         private int mScheduled;
         private int mDisposed;
 
         internal UnityEditorMainThreadScheduler()
-            : this(CreateCallDelayed())
+            : this(
+                CreateCallDelayed(),
+                RegisterEditorUpdate)
         {
         }
 
         internal UnityEditorMainThreadScheduler(
-            CallDelayedDelegate callDelayed)
+            CallDelayedDelegate callDelayed,
+            RegisterUpdateDelegate registerUpdate)
         {
             mCallDelayed = callDelayed ??
                 throw new ArgumentNullException(nameof(callDelayed));
+            mRegisterUpdate = registerUpdate ??
+                throw new ArgumentNullException(nameof(registerUpdate));
+            mRegisterDrainCallback = RegisterDrainForNextUpdate;
             mDrainCallback = DrainOnEditorUpdate;
         }
 
@@ -59,6 +69,13 @@ namespace YokiFrame.Unity
                 callDelayed);
         }
 
+        private static Action RegisterEditorUpdate(
+            EditorApplication.CallbackFunction action)
+        {
+            EditorApplication.update += action;
+            return () => EditorApplication.update -= action;
+        }
+
         internal void Post(Action action)
         {
             if (action == null)
@@ -79,14 +96,18 @@ namespace YokiFrame.Unity
             if (Interlocked.Exchange(ref mDisposed, 1) != 0)
                 return;
 
-            Action cancel;
+            Action cancelRegistration;
+            Action cancelUpdate;
             lock (mLifecycleSync)
             {
-                cancel = mCancelScheduledDrain;
-                mCancelScheduledDrain = null;
+                cancelRegistration = mCancelScheduledRegistration;
+                mCancelScheduledRegistration = null;
+                cancelUpdate = mCancelRegisteredUpdate;
+                mCancelRegisteredUpdate = null;
             }
 
-            cancel?.Invoke();
+            cancelRegistration?.Invoke();
+            cancelUpdate?.Invoke();
             Interlocked.Exchange(ref mScheduled, 0);
             Action ignored;
             while (mActions.TryDequeue(out ignored))
@@ -109,9 +130,12 @@ namespace YokiFrame.Unity
             Action cancel;
             try
             {
-                // Unity 2022.3 CallDelayed registers a one-shot tick callback
-                // and wakes the Editor through its [ThreadSafe] SignalTick.
-                cancel = mCallDelayed(mDrainCallback, 0d);
+                // CallDelayed is the thread-safe wake-up edge only. Its
+                // callback may repeat inside one Profiler frame, so it must
+                // register (not execute) the actual next-update drain.
+                cancel = mCallDelayed(
+                    mRegisterDrainCallback,
+                    0d);
             }
             catch
             {
@@ -128,15 +152,48 @@ namespace YokiFrame.Unity
                 }
                 else
                 {
-                    mCancelScheduledDrain = cancel;
+                    mCancelScheduledRegistration = cancel;
+                }
+            }
+        }
+
+        private void RegisterDrainForNextUpdate()
+        {
+            lock (mLifecycleSync)
+            {
+                mCancelScheduledRegistration = null;
+                if (Volatile.Read(ref mDisposed) != 0 ||
+                    Volatile.Read(ref mScheduled) == 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    mCancelRegisteredUpdate =
+                        mRegisterUpdate(mDrainCallback) ??
+                        throw new InvalidOperationException(
+                            "Editor update registration returned no cancellation.");
+                }
+                catch
+                {
+                    Interlocked.Exchange(ref mScheduled, 0);
+                    throw;
                 }
             }
         }
 
         private void DrainOnEditorUpdate()
         {
+            Action cancelUpdate;
             lock (mLifecycleSync)
-                mCancelScheduledDrain = null;
+            {
+                cancelUpdate = mCancelRegisteredUpdate;
+                mCancelRegisteredUpdate = null;
+            }
+
+            // Remove the one-shot update callback before executing user work.
+            cancelUpdate?.Invoke();
             Interlocked.Exchange(ref mScheduled, 0);
             if (Volatile.Read(ref mDisposed) != 0)
                 return;
@@ -162,6 +219,9 @@ namespace YokiFrame.Unity
         internal delegate Action CallDelayedDelegate(
             EditorApplication.CallbackFunction action,
             double delaySeconds);
+
+        internal delegate Action RegisterUpdateDelegate(
+            EditorApplication.CallbackFunction action);
     }
 }
 #endif
