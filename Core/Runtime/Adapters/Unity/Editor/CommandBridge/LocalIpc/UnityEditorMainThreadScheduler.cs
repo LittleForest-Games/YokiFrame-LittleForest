@@ -23,8 +23,20 @@ namespace YokiFrame.Unity
         private int mDisposed;
 
         internal UnityEditorMainThreadScheduler()
+            : this(CreateCallDelayed())
         {
+        }
+
+        internal UnityEditorMainThreadScheduler(
+            CallDelayedDelegate callDelayed)
+        {
+            mCallDelayed = callDelayed ??
+                throw new ArgumentNullException(nameof(callDelayed));
             mDrainCallback = DrainOnEditorUpdate;
+        }
+
+        private static CallDelayedDelegate CreateCallDelayed()
+        {
             var callDelayed = typeof(EditorApplication).GetMethod(
                 "CallDelayed",
                 BindingFlags.Static | BindingFlags.NonPublic,
@@ -42,10 +54,9 @@ namespace YokiFrame.Unity
                     "Thread-safe EditorApplication.CallDelayed is unavailable.");
             }
 
-            mCallDelayed =
-                (CallDelayedDelegate)Delegate.CreateDelegate(
-                    typeof(CallDelayedDelegate),
-                    callDelayed);
+            return (CallDelayedDelegate)Delegate.CreateDelegate(
+                typeof(CallDelayedDelegate),
+                callDelayed);
         }
 
         internal void Post(Action action)
@@ -130,8 +141,16 @@ namespace YokiFrame.Unity
             if (Volatile.Read(ref mDisposed) != 0)
                 return;
 
+            // Drain only the generation visible when this Editor update
+            // starts. Actions posted by a running callback belong to the next
+            // one-shot update; consuming until empty would collapse every
+            // budgeted continuation back into this frame.
+            var actionsAtStart = mActions.Count;
             Action action;
-            while (mActions.TryDequeue(out action))
+            for (var index = 0;
+                 index < actionsAtStart &&
+                 mActions.TryDequeue(out action);
+                 index++)
             {
                 action();
             }
@@ -140,7 +159,7 @@ namespace YokiFrame.Unity
                 ScheduleOneShotUpdate();
         }
 
-        private delegate Action CallDelayedDelegate(
+        internal delegate Action CallDelayedDelegate(
             EditorApplication.CallbackFunction action,
             double delaySeconds);
     }
