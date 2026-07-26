@@ -10,14 +10,21 @@ namespace YokiFrame.Unity.Editor.Tests
         [Test]
         public void PostWhileDraining_WaitsForNextOneShotUpdate()
         {
-            var scheduled =
+            var wakeUps =
+                new Queue<EditorApplication.CallbackFunction>();
+            var updates =
                 new Queue<EditorApplication.CallbackFunction>();
             var calls = new List<string>();
             using (var scheduler =
                    new UnityEditorMainThreadScheduler(
                        (callback, delaySeconds) =>
                        {
-                           scheduled.Enqueue(callback);
+                           wakeUps.Enqueue(callback);
+                           return () => { };
+                       },
+                       callback =>
+                       {
+                           updates.Enqueue(callback);
                            return () => { };
                        }))
             {
@@ -29,20 +36,29 @@ namespace YokiFrame.Unity.Editor.Tests
                             () => calls.Add("continuation"));
                     });
 
-                Assert.AreEqual(1, scheduled.Count);
-                scheduled.Dequeue().Invoke();
+                Assert.AreEqual(1, wakeUps.Count);
+                Assert.AreEqual(0, updates.Count);
+                wakeUps.Dequeue().Invoke();
+
+                Assert.AreEqual(0, calls.Count);
+                Assert.AreEqual(1, updates.Count);
+                updates.Dequeue().Invoke();
 
                 CollectionAssert.AreEqual(
                     new[] { "first" },
                     calls);
-                Assert.AreEqual(1, scheduled.Count);
+                Assert.AreEqual(1, wakeUps.Count);
+                Assert.AreEqual(0, updates.Count);
 
-                scheduled.Dequeue().Invoke();
+                wakeUps.Dequeue().Invoke();
+                Assert.AreEqual(1, updates.Count);
+                updates.Dequeue().Invoke();
 
                 CollectionAssert.AreEqual(
                     new[] { "first", "continuation" },
                     calls);
-                Assert.AreEqual(0, scheduled.Count);
+                Assert.AreEqual(0, wakeUps.Count);
+                Assert.AreEqual(0, updates.Count);
             }
         }
     }
