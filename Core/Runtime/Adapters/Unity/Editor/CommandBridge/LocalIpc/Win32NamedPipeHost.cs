@@ -16,8 +16,10 @@ namespace YokiFrame.Unity
     /// </summary>
     internal sealed class Win32NamedPipeHost : IDisposable
     {
-        private const int MainThreadDrainMaxCount = 16;
-        private const int MainThreadDrainBudgetMs = 4;
+        // Keep bounded transport work within the 2 ms per-frame gate.
+        // The 64-request global queue still drains within 16 Editor updates.
+        private const int MainThreadDrainMaxCount = 4;
+        private const int MainThreadDrainBudgetMs = 2;
         private const int CompletionPollMs = 100;
 
         private static readonly ProfilerMarker sMainThreadDrainProfilerMarker =
