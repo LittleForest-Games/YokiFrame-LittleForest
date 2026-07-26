@@ -178,6 +178,17 @@ namespace YokiFrame
         /// </summary>
         public string Dispatch(string commandJson)
         {
+            return Dispatch(commandJson, CommandBridgeDispatchContext.FileBridge);
+        }
+
+        /// <summary>
+        /// 分发命令 JSON，并把 transport/session/connection correlation
+        /// 作为 immutable side-car context 传给 policy 与 contextual handler。
+        /// </summary>
+        public string Dispatch(
+            string commandJson,
+            CommandBridgeDispatchContext dispatchContext)
+        {
             // 提取路由字段。
             var kit = JsonHelper.ExtractString(commandJson, "kit");
             var action = JsonHelper.ExtractString(commandJson, "action");
@@ -217,7 +228,7 @@ namespace YokiFrame
             JsonHelper.TryExtractInt(commandJson, "timeoutMs", out timeoutMs);
 
             var command = new CommandBridgeCommand(requestId, engineId, source, kit, action, payloadJson,
-                protocolVersion, createdAtUtc, timeoutMs);
+                protocolVersion, createdAtUtc, timeoutMs, dispatchContext);
 
             // 过期检查在 Policy 之前：过期命令不调用 Policy 链，直接返回 CommandExpired 错误。
             if (command.IsExpired(DateTime.UtcNow))
@@ -258,7 +269,10 @@ namespace YokiFrame
 
             try
             {
-                var resultData = handler.HandleAction(action, payloadJson);
+                var contextualHandler = handler as IContextualKitCommandHandler;
+                var resultData = contextualHandler != null
+                    ? contextualHandler.HandleCommand(command)
+                    : handler.HandleAction(action, payloadJson);
                 return JsonHelper.BuildResponse(requestId, kit, action, "success", resultData, engineId);
             }
             catch (Exception ex)
