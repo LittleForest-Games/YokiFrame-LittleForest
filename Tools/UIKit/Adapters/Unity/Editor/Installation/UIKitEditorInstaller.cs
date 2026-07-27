@@ -9,7 +9,6 @@ namespace YokiFrame
         private static readonly UIKitInteractionProvider sProvider = new();
 
         /// <summary>Unity Editor 程序集加载后幂等注册 UIKit Provider。</summary>
-        [InitializeOnLoadMethod]
         private static void InstallOnEditorLoad()
         {
             EnsureInstalled();

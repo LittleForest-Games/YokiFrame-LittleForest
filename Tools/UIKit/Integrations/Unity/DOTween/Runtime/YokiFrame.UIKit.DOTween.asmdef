@@ -5,7 +5,9 @@
         "GUID:70f72e85051a8df4fa8542144c429d1f",
         "DOTween.Modules"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

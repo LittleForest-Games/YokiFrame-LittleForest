@@ -94,7 +94,6 @@ namespace YokiFrame.Unity
         /// <summary>
         /// 在场景加载后捕获 Unity 主线程上下文，并依据已解析的 Runtime Settings 初始化覆盖层。
         /// </summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CaptureMainThreadAndApplySettings()
         {
             sMainThreadContext = SynchronizationContext.Current;

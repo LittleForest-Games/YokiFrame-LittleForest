@@ -33,7 +33,6 @@ namespace YokiFrame.Unity
         /// <summary>
         /// 在新 Unity 子系统会话中清理静态状态并重新注册惰性宿主工厂。
         /// </summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetAndRegisterDefaultFactories()
         {
             UnityLogKitPlayerOverlay.Reset();

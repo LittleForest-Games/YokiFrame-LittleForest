@@ -5,7 +5,9 @@
         "GUID:70f72e85051a8df4fa8542144c429d1f",
         "Unity.InputSystem"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

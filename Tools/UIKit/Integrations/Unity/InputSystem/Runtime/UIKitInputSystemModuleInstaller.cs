@@ -8,7 +8,6 @@ namespace YokiFrame
     internal static class UIKitInputSystemModuleInstaller
     {
         /// <summary>每次 Player 子系统初始化时重新安装工厂，兼容禁用 Domain Reload 的运行方式。</summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void Install()
         {
             UIKit.RegisterInputModuleFactory(static owner =>

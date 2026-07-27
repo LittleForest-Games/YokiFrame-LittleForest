@@ -18,7 +18,6 @@ namespace YokiFrame
         /// <summary>
         /// 在 Unity Editor 程序集加载后安装项目配置实现，Player 编译不会看到该注册。
         /// </summary>
-        [InitializeOnLoadMethod]
         private static void Register()
         {
             UnityYokiFrameRuntimeSettingsEditorOverlay.Register(TryApply);

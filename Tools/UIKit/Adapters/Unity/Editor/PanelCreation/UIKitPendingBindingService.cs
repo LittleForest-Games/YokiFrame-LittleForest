@@ -9,7 +9,6 @@ namespace YokiFrame
     /// <summary>
     /// 跨 Domain Reload 保存待回填 Prefab，并在脚本编译完成后重试。
     /// </summary>
-    [InitializeOnLoad]
     internal static class UIKitPendingBindingService
     {
         private const string SESSION_KEY = "YokiFrame.UIKit.PendingBindings";

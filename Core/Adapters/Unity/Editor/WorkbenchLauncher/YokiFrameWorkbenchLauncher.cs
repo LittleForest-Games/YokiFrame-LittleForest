@@ -14,7 +14,7 @@ namespace YokiFrame
     /// </summary>
     internal static partial class YokiFrameWorkbenchLauncher
     {
-        private const string MENU_PATH = "YokiFrame/Workbench/Open %e";
+        private const string MENU_PATH = "YokiFrame/Workbench/Open";
         private const string LAUNCHER_SCRIPT_NAME = "YokiFrameWorkbenchLauncher";
         private const string LAUNCHER_SCRIPT_GUID = "99ad1cafdf154af19d97a5864ac6e097";
         private const string LAUNCHER_SCRIPT_RELATIVE_PATH = "Core/Adapters/Unity/Editor/WorkbenchLauncher/YokiFrameWorkbenchLauncher.cs";

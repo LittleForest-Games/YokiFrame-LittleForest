@@ -12,7 +12,6 @@ namespace YokiFrame
     internal static class UnityYokiFrameEditorAdapterInstaller
     {
         /// <summary>在 Unity Editor 域加载完成后注册惰性工厂，并建立不创建 logger 的工具环境。</summary>
-        [InitializeOnLoadMethod]
         private static void RegisterDefaultFactories()
         {
             UnityLogKitRuntimeInstaller.RegisterDefaultFactories();

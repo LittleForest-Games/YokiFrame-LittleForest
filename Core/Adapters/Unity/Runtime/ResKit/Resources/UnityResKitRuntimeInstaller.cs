@@ -27,7 +27,6 @@ namespace YokiFrame.Unity
         /// <summary>
         /// 在进入新 Player 子系统时清理上一会话静态状态，并重新注册默认 Provider 工厂。
         /// </summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetAndRegisterDefaultProviderFactory()
         {
             ResKit.ResetRuntimeDefaults();

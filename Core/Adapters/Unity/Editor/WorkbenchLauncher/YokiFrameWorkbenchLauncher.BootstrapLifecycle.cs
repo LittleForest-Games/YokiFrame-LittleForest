@@ -14,7 +14,6 @@ namespace YokiFrame
     /// <summary>
     /// 绑定 Workbench Runtime bootstrap 与 Unity Editor 生命周期，确保 reload 或退出不会遗留构建进程。
     /// </summary>
-    [InitializeOnLoad]
     internal static partial class YokiFrameWorkbenchLauncher
     {
         private static readonly object sRuntimeBootstrapStateLock = new object();

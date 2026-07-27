@@ -8,7 +8,6 @@ namespace YokiFrame.Unity
     internal static class UnityResKitEditorInstaller
     {
         /// <summary>跳过 AssetImportWorker；注册动作不会创建或覆盖当前 Provider。</summary>
-        [InitializeOnLoadMethod]
         private static void RegisterDefaultProviderFactory()
         {
             if (AssetDatabase.IsAssetImportWorkerProcess()) return;

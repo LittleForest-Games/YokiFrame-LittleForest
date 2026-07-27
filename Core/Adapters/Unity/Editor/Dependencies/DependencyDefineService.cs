@@ -12,7 +12,6 @@ namespace YokiFrame.Unity
     /// <summary>
     /// 监听 Unity 依赖环境变化，并把七组可选依赖同步为当前构建目标的 YokiFrame 宏。
     /// </summary>
-    [InitializeOnLoad]
     public static class DependencyDefineService
     {
         /// <summary>

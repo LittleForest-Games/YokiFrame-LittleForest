@@ -9,7 +9,6 @@ using UnityEngine;
 namespace YokiFrame.Unity
 {
     /// <summary>在 Unity Scene View 绘制 SpatialKit 有界只读几何快照。</summary>
-    [InitializeOnLoad]
     internal static class UnitySpatialKitSceneGizmoDrawer
     {
         private const string MENU_PATH = "YokiFrame/SpatialKit/Open Overlay Menu";

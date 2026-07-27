@@ -7,7 +7,6 @@ using UnityEngine.SceneManagement;
 namespace YokiFrame
 {
     /// <summary>维护 Unity Editor 公共只读上下文的 revision 与事件订阅。</summary>
-    [InitializeOnLoad]
     public static class UnityEditorContextService
     {
         private static long sRevision = 1L;

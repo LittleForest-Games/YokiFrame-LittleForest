@@ -11,7 +11,6 @@ namespace YokiFrame
     /// <summary>
     /// 在 Unity Editor 中驱动最小 FileBridge 注册、心跳、snapshot 和命令消费。
     /// </summary>
-    [InitializeOnLoad]
     internal static partial class YokiFrameEditorFileBridgePump
     {
         // 心跳仅承担低频 FileBridge 存活证明；实时 Kit 状态由 Shared Memory 承载，避免机械盘被高频写入。

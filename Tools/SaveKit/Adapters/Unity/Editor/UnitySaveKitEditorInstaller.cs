@@ -7,7 +7,6 @@ namespace YokiFrame.Unity
     internal static class UnitySaveKitEditorInstaller
     {
         /// <summary>把 Unity Editor 的加载时机转发给跨宿主 SaveKit 安装入口。</summary>
-        [InitializeOnLoadMethod]
         private static void Install()
         {
             YokiFrame.SaveKitEditorInstaller.EnsureInstalled();

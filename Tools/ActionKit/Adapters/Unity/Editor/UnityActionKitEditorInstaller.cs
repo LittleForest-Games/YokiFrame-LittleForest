@@ -11,7 +11,6 @@ namespace YokiFrame.Unity
         /// <summary>
         /// 把 Unity 的 Editor 加载时机转发给跨宿主 ActionKit 编辑器安装入口。
         /// </summary>
-        [InitializeOnLoadMethod]
         private static void Install()
         {
             ActionKitEditorInstaller.EnsureInstalled();

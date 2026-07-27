@@ -7,7 +7,6 @@ namespace YokiFrame.Unity
     internal static class UnityAudioKitRuntimeInstaller
     {
         /// <summary>清理上一代静态状态并注册惰性 Unity 后端工厂。</summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetAndRegisterDefaultBackendFactory()
         {
             AudioKit.ResetRuntimeDefaults();

@@ -393,7 +393,6 @@ namespace YokiFrame
         /// <summary>
         /// Unity 子系统注册阶段重置退出状态。
         /// </summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetForSubsystemRegistration()
         {
             ResetForTests();

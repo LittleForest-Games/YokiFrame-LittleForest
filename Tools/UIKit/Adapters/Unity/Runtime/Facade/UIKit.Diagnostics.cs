@@ -23,7 +23,6 @@ namespace YokiFrame
         /// <summary>
         /// Unity 新子系统会话开始时重置版本；同一会话内 Root 创建和销毁只允许递增。
         /// </summary>
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetDiagnosticVersion()
         {
             sDiagnosticVersion = 0;
