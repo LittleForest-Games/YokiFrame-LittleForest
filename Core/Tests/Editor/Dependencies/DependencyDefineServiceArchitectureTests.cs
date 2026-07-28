@@ -8,7 +8,7 @@ using UnityEngine;
 namespace YokiFrame.Tests
 {
     /// <summary>
-    /// 验证 Unity Editor DependencyDefineService 的目录、事件调度和单次 snapshot 采集约束。
+    /// 验证 Little Forest profile 中 DependencyDefineService 只由显式入口触发。
     /// </summary>
     public sealed class DependencyDefineServiceArchitectureTests
     {
@@ -16,20 +16,24 @@ namespace YokiFrame.Tests
             "YokiFrame/Core/Adapters/Unity/Editor/Dependencies";
 
         /// <summary>
-        /// 验证服务使用 package/asset/compilation 事件和 delayCall 延后，不包含 busy-wait。
+        /// 验证服务保留显式菜单和 busy 时延后，但不自动进入 Unity 生命周期。
         /// </summary>
         [Test]
-        public void ServiceUsesEventsAndDelayCallWithoutBusyWait()
+        public void ServiceRefreshesOnlyFromExplicitMenuWithoutAutomaticHooks()
         {
             var servicePath = Path.Combine(GetDependenciesRoot(), "DependencyDefineService.cs");
             Assert.IsTrue(File.Exists(servicePath), "缺少 DependencyDefineService: " + servicePath);
             var source = File.ReadAllText(servicePath);
 
-            StringAssert.Contains("Events.registeredPackages", source);
-            StringAssert.Contains("CompilationPipeline.compilationFinished", source);
+            StringAssert.Contains("[MenuItem(\"YokiFrame/Refresh Dependency Defines\")]", source);
             StringAssert.Contains("EditorApplication.delayCall", source);
             StringAssert.Contains("EditorApplication.isCompiling", source);
             StringAssert.Contains("EditorApplication.isUpdating", source);
+            StringAssert.DoesNotContain("Events.registeredPackages", source);
+            StringAssert.DoesNotContain("CompilationPipeline.compilationFinished", source);
+            StringAssert.DoesNotContain("AssetPostprocessor", source);
+            StringAssert.DoesNotContain("OnPostprocessAllAssets", source);
+            StringAssert.DoesNotContain("static DependencyDefineService()", source);
             StringAssert.DoesNotContain("while (", source);
             StringAssert.DoesNotContain("Client.List", source);
             StringAssert.DoesNotContain("Thread.Sleep", source);
