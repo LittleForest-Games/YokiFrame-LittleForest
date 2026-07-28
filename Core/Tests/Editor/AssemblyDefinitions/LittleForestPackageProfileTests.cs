@@ -25,9 +25,16 @@ namespace YokiFrame.Tests
             RegexOptions.CultureInvariant);
 
         private static readonly Regex sAutomaticEntry = new Regex(
-            "\\[\\s*(?:(?:UnityEditor|UnityEngine)\\.)?"
-            + "(?:InitializeOnLoad(?:Method)?|RuntimeInitializeOnLoadMethod)"
+            "\\[\\s*(?:(?:UnityEditor|UnityEngine)(?:\\.[A-Za-z_][A-Za-z0-9_]*)*\\.)?"
+            + "(?:InitializeOnLoad(?:Method)?|RuntimeInitializeOnLoadMethod"
+            + "|DidReloadScripts|OnOpenAsset|PostProcessScene|PostProcessBuild"
+            + "|InitializeOnEnterPlayMode)"
             + "(?:Attribute)?\\b",
+            RegexOptions.CultureInvariant);
+
+        private static readonly Regex sAutomaticCallbackBase = new Regex(
+            ":\\s*(?:(?:UnityEditor)\\.)?"
+            + "(?:AssetPostprocessor|AssetModificationProcessor)\\b",
             RegexOptions.CultureInvariant);
 
         /// <summary>
@@ -132,7 +139,9 @@ namespace YokiFrame.Tests
                     continue;
                 }
 
-                if (sAutomaticEntry.IsMatch(File.ReadAllText(sourcePath)))
+                string source = File.ReadAllText(sourcePath);
+                if (sAutomaticEntry.IsMatch(source)
+                    || sAutomaticCallbackBase.IsMatch(source))
                 {
                     entries.Add(relativePath);
                 }
