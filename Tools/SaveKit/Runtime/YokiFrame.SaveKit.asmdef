@@ -1,4 +1,4 @@
-﻿{
+{
     "name": "YokiFrame.SaveKit",
     "rootNamespace": "YokiFrame",
     "references": [
@@ -9,11 +9,11 @@
         "Editor"
     ],
     "excludePlatforms": [],
-    "allowUnsafeCode": true,
+    "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
-    "noEngineReferences": false
+    "noEngineReferences": true
 }

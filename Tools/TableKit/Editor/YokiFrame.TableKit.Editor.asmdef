@@ -1,28 +1,19 @@
 {
-    "name":  "YokiFrame.TableKit.Editor",
-    "rootNamespace": "YokiFrame.Unity",
-    "references":  [
-                       "YokiFrame.Unity.Editor",
-                       "YokiFrame.TableKit.Editor.TableKitWindow"
-                   ],
-    "includePlatforms":  [
-                             "Editor"
-                         ],
-    "excludePlatforms":  [
-
-                         ],
-    "allowUnsafeCode":  false,
-    "overrideReferences":  false,
-    "precompiledReferences":  [
-
-                              ],
-    "autoReferenced":  true,
-    "defineConstraints":  [
-                              "YOKIFRAME_LUBAN_SUPPORT",
-                              "YOKIFRAME_LEGACY_UNITY_TABLEKIT_EDITOR"
-                          ],
-    "versionDefines":  [
-
-                       ],
-    "noEngineReferences":  false
+    "name": "YokiFrame.TableKit.Editor",
+    "rootNamespace": "YokiFrame",
+    "references": [
+        "YokiFrame",
+        "YokiFrame.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
 }
