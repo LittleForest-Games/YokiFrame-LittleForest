@@ -9,7 +9,7 @@ namespace YokiFrame.Tests
     [TestFixture]
     public sealed class SceneKitArchitectureTests
     {
-        private const string UNITY_PROVIDER_PATH = "YokiFrame/Core/Adapters/Unity/Runtime/ResKit/Resources/UnityResourceProvider.cs";
+        private const string UNITY_PROVIDER_PATH = "YokiFrame/Core/Adapters/Unity/Runtime/ResKit/ResourceProviders/UnityResourceProvider.cs";
         private const string GODOT_PROVIDER_PATH = "YokiFrame/Core/Adapters/Godot/Runtime/ResKit/GodotResourceProvider.cs";
         private const string YOOASSET_PROVIDER_PATH = "YokiFrame/Core/Integrations/Unity/ResKit/YooAsset/Runtime/YooAssetResourceProvider.cs";
 

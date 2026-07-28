@@ -117,6 +117,48 @@ namespace YokiFrame.Tests
         }
 
         /// <summary>
+        /// Unity serializes every asset beneath a Resources directory into the
+        /// Player even when its owning asmdef is Editor-only. Production package
+        /// content must therefore keep this magic directory empty or native-Kit
+        /// assets and MonoScript metadata become Player residue.
+        /// </summary>
+        [Test]
+        public void ProductionUnityResourcesDirectoriesContainNoAssets()
+        {
+            string packageRoot = GetPackageRoot();
+            string[] assetPaths = Directory.GetFiles(
+                packageRoot,
+                "*",
+                SearchOption.AllDirectories);
+
+            var violations = new List<string>();
+            foreach (string assetPath in assetPaths)
+            {
+                string relativePath = GetRelativePath(packageRoot, assetPath);
+                if (IsTestPath(relativePath)
+                    || IsUnityIgnoredPath(relativePath))
+                {
+                    continue;
+                }
+
+                string[] segments = relativePath.Split('/');
+                if (segments.Any(segment =>
+                        string.Equals(
+                            segment,
+                            "Resources",
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    violations.Add(relativePath);
+                }
+            }
+
+            Assert.IsEmpty(
+                violations,
+                "生产源码不得位于 Unity Resources 特殊目录，否则 MonoScript 会进入 Player:\n"
+                + string.Join("\n", violations));
+        }
+
+        /// <summary>
         /// The package has exactly one automatic Unity entry point: the dedicated
         /// Little Forest Local IPC Host. Native Kits, FileBridge and Workbench do
         /// not self-register or initialize.
@@ -233,6 +275,12 @@ namespace YokiFrame.Tests
                    || relativePath.StartsWith(
                        "Tests/",
                        StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsUnityIgnoredPath(string relativePath)
+        {
+            return relativePath.Split('/').Any(segment =>
+                segment.EndsWith("~", StringComparison.Ordinal));
         }
 
         private static bool IsGodotOnlySource(
