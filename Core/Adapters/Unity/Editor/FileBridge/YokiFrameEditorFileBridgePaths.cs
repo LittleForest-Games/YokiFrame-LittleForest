@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 
+using System;
 using System.IO;
 using UnityEngine;
 
@@ -18,6 +19,7 @@ namespace YokiFrame
         private static string sYokiFrameRoot;
         private static string sEngineRoot;
         private static string sCommandsRoot;
+        private static string sProcessingRoot;
         private static string sArchiveRoot;
         private static string sDeadletterRoot;
         private static string sResultsRoot;
@@ -104,6 +106,21 @@ namespace YokiFrame
         }
 
         /// <summary>
+        /// 获取跨进程 command claim 目录。
+        /// </summary>
+        /// <returns>processing 目录绝对路径。</returns>
+        public static string GetProcessingRoot()
+        {
+            if (sProcessingRoot == null)
+            {
+                sProcessingRoot = EnsureSafeProjectPath(
+                    Path.Combine(GetCommandsRoot(), YokiFrameFileBridgeLayout.PROCESSING_DIRECTORY));
+            }
+
+            return sProcessingRoot;
+        }
+
+        /// <summary>
         /// 获取命令死信目录。
         /// </summary>
         /// <returns>deadletter 目录绝对路径。</returns>
@@ -165,6 +182,12 @@ namespace YokiFrame
             return sHeartbeatPath;
         }
 
+        /// <summary>获取同一项目和 unity-editor Host 的 admission 锁路径。</summary>
+        public static string GetAdmissionLockPath()
+        {
+            return EnsureSafeProjectPath(Path.Combine(GetEngineRoot(), "host.lock"));
+        }
+
         /// <summary>
         /// 获取指定 snapshot 文件路径。
         /// </summary>
@@ -173,6 +196,8 @@ namespace YokiFrame
         /// <returns>snapshot 文件绝对路径。</returns>
         public static string GetSnapshotPath(string kit, string name)
         {
+            EnsureSafeId(kit, nameof(kit));
+            EnsureSafeId(name, nameof(name));
             return EnsureSafePathBelowVerifiedRoot(
                 GetSnapshotsRoot(),
                 Path.Combine(GetSnapshotsRoot(), kit, name + YokiFrameFileBridgeLayout.JSON_EXTENSION));
@@ -185,6 +210,7 @@ namespace YokiFrame
         /// <returns>response 文件绝对路径。</returns>
         public static string GetResponsePath(string requestId)
         {
+            EnsureSafeId(requestId, nameof(requestId));
             return EnsureSafePathBelowVerifiedRoot(
                 GetResultsRoot(),
                 Path.Combine(GetResultsRoot(), requestId + YokiFrameFileBridgeLayout.RESPONSE_FILE_SUFFIX));
@@ -209,6 +235,7 @@ namespace YokiFrame
         /// <returns>deadletter 诊断文件绝对路径。</returns>
         public static string GetDeadletterInfoPath(string deadletterId)
         {
+            EnsureSafeId(deadletterId, nameof(deadletterId));
             return EnsureSafePathBelowVerifiedRoot(
                 GetDeadletterRoot(),
                 Path.Combine(GetDeadletterRoot(), deadletterId + "-deadletter.json"));
@@ -221,6 +248,7 @@ namespace YokiFrame
         /// <returns>deadletter 原始请求文件绝对路径。</returns>
         public static string GetDeadletterRequestPath(string deadletterId)
         {
+            EnsureSafeId(deadletterId, nameof(deadletterId));
             return EnsureSafePathBelowVerifiedRoot(
                 GetDeadletterRoot(),
                 Path.Combine(GetDeadletterRoot(), deadletterId + "-request.json"));
@@ -236,12 +264,14 @@ namespace YokiFrame
         public static void EnsureBridgeRootsAreSafe()
         {
             var engineRoot = GetEngineRoot();
-            EnsureNoReparsePoint(GetProjectRoot(), engineRoot);
-            EnsureNoReparsePointBelow(engineRoot, GetArchiveRoot());
-            EnsureNoReparsePointBelow(engineRoot, GetDeadletterRoot());
-            EnsureNoReparsePointBelow(engineRoot, GetResultsRoot());
-            EnsureNoReparsePointBelow(engineRoot, GetSnapshotsRoot());
-            EnsureNoReparsePointBelow(engineRoot, GetHeartbeatPath());
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(GetProjectRoot(), engineRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetProcessingRoot());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetArchiveRoot());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetDeadletterRoot());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetResultsRoot());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetSnapshotsRoot());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetHeartbeatPath());
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(engineRoot, GetAdmissionLockPath());
         }
 
         /// <summary>获取 snapshot 根目录。</summary>
@@ -275,7 +305,7 @@ namespace YokiFrame
         private static string EnsureSafeProjectPath(string path)
         {
             var fullPath = EnsureInsideProject(path);
-            EnsureNoReparsePoint(GetProjectRoot(), fullPath);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(GetProjectRoot(), fullPath);
             return fullPath;
         }
 
@@ -288,8 +318,21 @@ namespace YokiFrame
         private static string EnsureSafePathBelowVerifiedRoot(string verifiedRoot, string path)
         {
             var fullPath = EnsureInsideProject(path);
-            EnsureNoReparsePointBelow(verifiedRoot, fullPath);
+            YokiFrameFilePathPolicy.EnsureNoReparsePointBelow(verifiedRoot, fullPath);
             return fullPath;
+        }
+
+        /// <summary>
+        /// 验证动态协议路径片段符合共享 SafeId 契约，阻止分隔符和目录穿越进入 FileBridge 文件名。
+        /// </summary>
+        /// <param name="value">待验证的路径片段。</param>
+        /// <param name="parameterName">异常参数名。</param>
+        private static void EnsureSafeId(string value, string parameterName)
+        {
+            if (!YokiFrameSafeIdContract.IsSafeId(value))
+            {
+                throw new ArgumentException("FileBridge path segment is not a safe ID.", parameterName);
+            }
         }
 
         /// <summary>规范化候选路径并拒绝逃逸到项目根之外。</summary>
@@ -309,36 +352,6 @@ namespace YokiFrame
             return fullPath;
         }
 
-        /// <summary>拒绝项目根到候选路径的现存组件包含符号链接、Junction 或其它重解析点。</summary>
-        private static void EnsureNoReparsePoint(string root, string path)
-        {
-            EnsurePathComponentIsNotReparsePoint(root);
-            EnsureNoReparsePointBelow(root, path);
-        }
-
-        /// <summary>只校验已验证根之下的现存组件不是重解析点。</summary>
-        private static void EnsureNoReparsePointBelow(string verifiedRoot, string path)
-        {
-            var current = verifiedRoot;
-            var relativePath = Path.GetRelativePath(verifiedRoot, path);
-            foreach (var segment in relativePath.Split(
-                         new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
-                         System.StringSplitOptions.RemoveEmptyEntries))
-            {
-                current = Path.Combine(current, segment);
-                EnsurePathComponentIsNotReparsePoint(current);
-            }
-        }
-
-        /// <summary>校验单个现存文件系统组件不是重解析点。</summary>
-        private static void EnsurePathComponentIsNotReparsePoint(string path)
-        {
-            if ((File.Exists(path) || Directory.Exists(path))
-                && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            {
-                throw new IOException("FileBridge path contains a symbolic link or junction: " + path);
-            }
-        }
     }
 }
 

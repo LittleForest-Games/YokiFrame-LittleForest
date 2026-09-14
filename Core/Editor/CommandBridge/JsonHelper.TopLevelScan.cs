@@ -1,4 +1,6 @@
 #if UNITY_EDITOR || (GODOT && TOOLS) || YOKIFRAME_TOOLING
+using System;
+
 namespace YokiFrame
 {
     /// <summary>

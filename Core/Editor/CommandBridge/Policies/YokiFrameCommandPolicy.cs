@@ -6,7 +6,7 @@ using System.Text;
 namespace YokiFrame
 {
     /// <summary>
-    /// 提供 CommandBridge v2 的最小跨宿主命令策略。
+    /// 提供跨宿主 FileBridge 命令的最小允许策略。
     /// </summary>
     public sealed class YokiFrameCommandPolicy
     {
@@ -53,7 +53,8 @@ namespace YokiFrame
         public IReadOnlyList<YokiFrameCommandDescriptor> AllowedCommands => mAllowedCommandView;
 
         /// <summary>
-        /// 创建当前 Phase 5 首切片使用的默认策略。
+        /// 创建仅含默认 System 命令的跨宿主策略；宿主命令经
+        /// <see cref="CreateDefault(YokiFrameCommandDescriptor[])"/> 按注册 handler 追加。
         /// </summary>
         /// <returns>默认 CommandPolicy。</returns>
         public static YokiFrameCommandPolicy CreateDefault()

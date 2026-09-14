@@ -1,5 +1,6 @@
 using YokiFrame.Tooling.Application.Models.UIKit;
 using YokiFrame.Tooling.Application.Services.UIKit;
+using YokiFrame.Workbench.Avalonia.Services;
 
 namespace YokiFrame.Workbench.Avalonia.ViewModels;
 
@@ -23,6 +24,7 @@ public sealed partial class UIKitPageViewModel
     private string mCodeTemplate = "Default";
     private IReadOnlyList<string> mCodeTemplateNames = new[] { "Default", "Minimal" };
     private IReadOnlyList<string> mCodeTemplateOptions = new[] { "默认", "精简" };
+    // 说明：模板选项为协议值映射，展示名由 CodeTemplateDisplay 转换，不在此处资源化。
     private bool mCanGenerateCode;
     private long mContextRevision;
     private string mActiveGlobalObjectId = string.Empty;
@@ -172,7 +174,8 @@ public sealed partial class UIKitPageViewModel
     {
         string normalized = engineId ?? string.Empty;
         if (string.Equals(mEditorEngineId, normalized, StringComparison.Ordinal)) return;
-        PersistEditorSettingsOnClose();
+        // 切换引擎前后台提交脏配置；方法内部已捕获异常并回显状态，不会逃逸。
+        _ = PersistEditorSettingsOnCloseAsync();
         mEditorEngineId = normalized;
         mEditorDefaultsLoaded = false;
         ResetEditorContext();
@@ -205,28 +208,26 @@ public sealed partial class UIKitPageViewModel
         }
         catch (Exception exception)
         {
-            return "配置读取失败，已使用 Unity 默认值: " + exception.Message;
+            return string.Format(GetString("String.UIKit.Editor.LoadFailedTemplate", "配置读取失败，已使用 Unity 默认值: {0}"), exception.Message);
         }
     }
 
     /// <summary>
-    /// 在 Workbench 关闭前同步提交用户修改过的 Editor Tools 配置，避免未执行生成操作时丢失表单值。
+    /// 在 Workbench 关闭或切换 engine 前提交用户修改过的 Editor Tools 配置，避免未执行生成操作时丢失表单值。
+    /// 直接 await 服务异步保存，不再在线程池上同步阻塞等待。
     /// </summary>
-    internal void PersistEditorSettingsOnClose()
+    internal async Task PersistEditorSettingsOnCloseAsync()
     {
         if (mEditorSettingsService == null || !mEditorSettingsDirty) return;
         try
         {
-            var request = CreateGenerationRequest();
-            Task.Run(() => mEditorSettingsService.SaveAsync(request, CancellationToken.None))
-                .GetAwaiter()
-                .GetResult();
+            await mEditorSettingsService.SaveAsync(CreateGenerationRequest(), CancellationToken.None);
             mEditorSettingsDirty = false;
             mEditorDefaultsLoaded = true;
         }
         catch (Exception exception)
         {
-            EditorStatusText = "配置保存失败: " + exception.Message;
+            EditorStatusText = string.Format(GetString("String.UIKit.Editor.SaveFailedTemplate", "配置保存失败: {0}"), exception.Message);
         }
     }
 
@@ -245,7 +246,7 @@ public sealed partial class UIKitPageViewModel
         }
         catch (Exception exception)
         {
-            EditorStatusText = "配置保存失败: " + exception.Message;
+            EditorStatusText = string.Format(GetString("String.UIKit.Editor.SaveFailedTemplate", "配置保存失败: {0}"), exception.Message);
             return false;
         }
         finally
@@ -274,7 +275,7 @@ public sealed partial class UIKitPageViewModel
         if (!await RefreshEditorContextAsync()) return;
         if (!CanGenerateCode)
         {
-            EditorStatusText = "当前 Unity 选择不是有效的 Panel Prefab，无法生成代码。";
+            EditorStatusText = GetString("String.UIKit.Editor.InvalidSelection", "当前 Unity 选择不是有效的 Panel Prefab，无法生成代码。");
             return;
         }
 
@@ -290,7 +291,7 @@ public sealed partial class UIKitPageViewModel
     {
         if (mEditorActionAsync == null) return false;
         EditorBusy = true;
-        EditorStatusText = "正在执行“" + GetEditorActionName(action) + "”...";
+        EditorStatusText = string.Format(GetString("String.UIKit.Editor.RunningActionTemplate", "正在执行“{0}”..."), GetEditorActionName(action));
         try
         {
             WorkbenchUIKitEditorResult result = await mEditorActionAsync(
@@ -303,7 +304,7 @@ public sealed partial class UIKitPageViewModel
         }
         catch (Exception exception)
         {
-            EditorStatusText = "操作失败: " + exception.Message;
+            EditorStatusText = string.Format(GetString("String.UIKit.Editor.OperationFailedTemplate", "操作失败: {0}"), exception.Message);
             return false;
         }
         finally
@@ -343,8 +344,9 @@ public sealed partial class UIKitPageViewModel
         string unavailableTemplate = EnsureCodeTemplateSelection(context.Defaults.CodeTemplate);
         if (!string.IsNullOrWhiteSpace(unavailableTemplate))
         {
-            EditorStatusText = "代码模板 “" + unavailableTemplate
-                + "” 当前不可用，已切换为 “" + CodeTemplateDisplay + "”。";
+            EditorStatusText = string.Format(
+                GetString("String.UIKit.Editor.TemplateUnavailableTemplate", "代码模板 “{0}” 当前不可用，已切换为 “{1}”。"),
+                unavailableTemplate, CodeTemplateDisplay);
         }
 
         RaiseEditorCommandStates();
@@ -359,6 +361,7 @@ public sealed partial class UIKitPageViewModel
             PrefabFolder = settings.PrefabFolder;
             ScriptFolder = settings.ScriptFolder;
             ScriptNamespace = settings.ScriptNamespace;
+            EnsureAssemblyOption(settings.AssemblyName);
             AssemblyName = settings.AssemblyName;
             CodeTemplate = settings.CodeTemplate;
         }
@@ -383,7 +386,7 @@ public sealed partial class UIKitPageViewModel
         CanGenerateCode = false;
         mContextRevision = 0L;
         mActiveGlobalObjectId = string.Empty;
-        EditorStatusText = EditorToolsAvailable ? string.Empty : "请选择 Unity 编辑器使用编辑器工具。";
+        EditorStatusText = EditorToolsAvailable ? string.Empty : GetString("String.UIKit.Editor.SelectEngineHint", "请选择 Unity 编辑器使用编辑器工具。");
     }
 
     /// <summary>把 Editor action 协议枚举转换为简体中文操作名称。</summary>
@@ -404,5 +407,11 @@ public sealed partial class UIKitPageViewModel
         ShowEditorToolsTaskCommand?.RaiseCanExecuteChanged();
         CreatePanelPrefabCommand?.RaiseCanExecuteChanged();
         GenerateCodeCommand?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>从当前语言资源读取 UIKit 文案，保留测试与无资源环境的中文兜底。</summary>
+    private static string GetString(string key, string fallback)
+    {
+        return WorkbenchI18nService.Instance.GetString(key, fallback);
     }
 }

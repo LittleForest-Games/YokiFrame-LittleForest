@@ -28,10 +28,10 @@ public sealed class ClientTransportOwnershipTests
     {
         var clientAssembly = typeof(IYokiFrameClient).Assembly;
         var clientType = typeof(IYokiFrameClient);
-        var pathsType = clientType.GetProperty(nameof(IYokiFrameClient.Paths))!.PropertyType;
-        var heartbeatType = clientType.GetMethod(nameof(IYokiFrameClient.ReadHeartbeat))!.ReturnType;
-        var bridgeStatusType = clientType.GetMethod(nameof(IYokiFrameClient.ReadBridgeStatus))!.ReturnType;
-        var sendResultType = clientType.GetMethod(nameof(IYokiFrameClient.SendCommandAsync))!
+        var pathsType = typeof(IEngineStateReader).GetProperty(nameof(IEngineStateReader.Paths))!.PropertyType;
+        var heartbeatType = typeof(IEngineStateReader).GetMethod(nameof(IEngineStateReader.ReadHeartbeat))!.ReturnType;
+        var bridgeStatusType = typeof(IEngineStateReader).GetMethod(nameof(IEngineStateReader.ReadBridgeStatus))!.ReturnType;
+        var sendResultType = typeof(ICommandTransport).GetMethod(nameof(ICommandTransport.SendCommandAsync))!
             .ReturnType
             .GetGenericArguments()[0];
 
@@ -65,7 +65,8 @@ public sealed class ClientTransportOwnershipTests
         var typeNames = new[]
         {
             "YokiFrame.Client.Transports.FileBridge.FileBridgeTransport",
-            "YokiFrame.Client.FileBridge.IO.AtomicJsonFileWriter",
+            // 原子写已单源为源码链接的共享实现；守卫意图不变：具体 IO 实现必须保持 Client 程序集内部可见。
+            "YokiFrame.YokiFrameAtomicFileWriter",
             "YokiFrame.Client.FileBridge.IO.PathSecurity",
             "YokiFrame.Client.Telemetry.SharedMemory.SharedMemoryTelemetryNamedMapReader"
         };
@@ -76,6 +77,34 @@ public sealed class ClientTransportOwnershipTests
             Assert.NotNull(transportType);
             Assert.False(transportType.IsPublic);
         }
+    }
+
+    /// <summary>
+    /// 验证聚合 Client 同时实现状态、命令和 telemetry 窄端口，Application 可以按能力组合依赖。
+    /// </summary>
+    [Fact]
+    public void AggregatedClientExposesNarrowCapabilityPorts()
+    {
+        var clientType = typeof(YokiFrameClient);
+
+        Assert.True(typeof(IEngineStateReader).IsAssignableFrom(clientType));
+        Assert.True(typeof(ICommandTransport).IsAssignableFrom(clientType));
+        Assert.True(typeof(ITelemetryReader).IsAssignableFrom(clientType));
+        Assert.True(typeof(IFastChannelCommandTransport).IsAssignableFrom(clientType));
+    }
+
+    /// <summary>
+    /// 验证可靠命令端口不再夹带可选 FastChannel 方法，避免不支持能力被伪装成默认传输行为。
+    /// </summary>
+    [Fact]
+    public void ReliableCommandPortDoesNotOwnFastChannelMethods()
+    {
+        Assert.DoesNotContain(
+            typeof(ICommandTransport).GetMethods(),
+            method => method.Name.Contains("FastChannel", StringComparison.Ordinal));
+        Assert.Contains(
+            typeof(IFastChannelCommandTransport).GetMethods(),
+            method => method.Name == nameof(IFastChannelCommandTransport.SendFastChannelReadOnlyCommandAsync));
     }
 
     /// <summary>

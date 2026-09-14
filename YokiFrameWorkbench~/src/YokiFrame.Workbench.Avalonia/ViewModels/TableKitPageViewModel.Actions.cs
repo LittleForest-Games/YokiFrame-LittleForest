@@ -1,8 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
-using System.Text.Json;
+using YokiFrame.Tooling.Application.Models.Luban;
 using YokiFrame.Tooling.Application.Models.TableKit;
+using YokiFrame.Tooling.Application.Services.Luban;
 
 namespace YokiFrame.Workbench.Avalonia.ViewModels;
 
@@ -12,36 +13,35 @@ public sealed partial class TableKitPageViewModel
     /// <summary>执行配置验证和预览读取。</summary>
     private async Task ValidateAsync()
     {
-        StatusText = "正在验证";
-        StatusDetailText = "正在读取 Luban 临时输出。";
+        StatusText = GetString(ValidatingKey, "正在验证");
+        StatusDetailText = GetString(ReadingTempOutputKey, "正在读取 Luban 临时输出。");
         IsConsoleExpanded = true;
         RefreshConfiguration();
-        AppendConsole("INFO", "开始验证配置并生成临时 JSON 预览。", false);
+        AppendConsole("INFO", GetString(StartValidateKey, "开始验证配置并生成临时 JSON 预览。"), false);
         TableKitOperationResult result = await mService.ValidateAsync(CreateOptions());
         ApplyOperationResult(result, true);
     }
 
-    /// <summary>重新读取当前 luban.conf 的 target，并刷新环境摘要。</summary>
+    /// <summary>重新读取当前 luban.conf 的 target，并刷新环境摘要；wire 解析由 Application 服务承载。</summary>
     private void RefreshConfiguration()
     {
         RefreshEnvironment();
-        if (!File.Exists(ResolveInputPath(ConfigPath))) return;
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(ResolveInputPath(ConfigPath)));
-            if (document.RootElement.TryGetProperty("targets", out JsonElement targets) && targets.ValueKind == JsonValueKind.Array)
+            foreach (var name in mService.ReadLubanTargetNames(ResolveInputPath(ConfigPath)))
             {
-                foreach (JsonElement target in targets.EnumerateArray())
-                {
-                    if (!target.TryGetProperty("name", out JsonElement name)) continue;
-                    AddOption(TargetOptions, name.GetString());
-                }
+                AddOption(TargetOptions, name);
             }
-            AppendConsole("INFO", "已刷新 Luban target 列表。", false);
+
+            AppendConsole("INFO", GetString(TargetsRefreshedKey, "已刷新 Luban target 列表。"), false);
         }
-        catch (JsonException exception)
+        catch (FileNotFoundException)
         {
-            AppendConsole("WARNING", "luban.conf 解析失败: " + exception.Message, false);
+            // 首次接入项目尚无 luban.conf 属正常状态，保持静默。
+        }
+        catch (Exception exception)
+        {
+            AppendConsole("WARNING", string.Format(GetString(ConfParseFailedTemplateKey, "luban.conf 解析失败: {0}"), exception.Message), false);
         }
     }
 
@@ -49,8 +49,8 @@ public sealed partial class TableKitPageViewModel
     private void SaveConfiguration()
     {
         if (!TryPersistConfiguration()) return;
-        AppendConsole("SUCCESS", "TableKit 配置已保存到当前项目。", false);
-        StatusText = "已保存";
+        AppendConsole("SUCCESS", GetString(ConfigSavedKey, "TableKit 配置已保存到当前项目。"), false);
+        SetStatus(GetString(SavedDetailKey, "已保存"));
     }
 
     /// <summary>尝试把当前 TableKit 草稿保存到项目设置，失败时保留可见诊断且不阻断窗口关闭。</summary>
@@ -64,9 +64,9 @@ public sealed partial class TableKitPageViewModel
         }
         catch (Exception exception)
         {
-            StatusText = "保存失败";
+            SetStatus(GetString(SaveFailedShortKey, "保存失败"));
             StatusDetailText = exception.Message;
-            AppendConsole("ERROR", "TableKit 配置保存失败: " + exception.Message, false);
+            AppendConsole("ERROR", string.Format(GetString(SaveFailedTemplateKey, "TableKit 配置保存失败: {0}"), exception.Message), false);
             return false;
         }
     }
@@ -79,8 +79,8 @@ public sealed partial class TableKitPageViewModel
         SelectedWorkspaceIndex = 0;
         IsConsoleExpanded = false;
         if (!TryPersistConfiguration()) return;
-        AppendConsole("INFO", "已还原默认 TableKit 配置。", false);
-        StatusText = "已还原默认";
+        AppendConsole("INFO", GetString(ResetDoneKey, "已还原默认 TableKit 配置。"), false);
+        SetStatus(GetString(ResetDetailKey, "已还原默认"));
     }
 
     /// <summary>加入一个默认额外 JSON 输出目标。</summary>
@@ -121,12 +121,12 @@ public sealed partial class TableKitPageViewModel
         string text = string.Join(Environment.NewLine, ConsoleEntries.Select(entry => "[" + entry.Time + "] " + entry.Level + " " + entry.Message));
         if (mCopyTextAsync == null)
         {
-            StatusDetailText = "当前没有可用剪贴板服务，请直接选择控制台文本。";
+            StatusDetailText = GetString(NoClipboardKey, "当前没有可用剪贴板服务，请直接选择控制台文本。");
             return;
         }
 
         await mCopyTextAsync(text);
-        AppendConsole("SUCCESS", "控制台日志已复制到剪贴板。", false);
+        AppendConsole("SUCCESS", GetString(ConsoleCopiedKey, "控制台日志已复制到剪贴板。"), false);
     }
 
     /// <summary>清空本轮控制台日志。</summary>
@@ -134,7 +134,7 @@ public sealed partial class TableKitPageViewModel
     {
         ConsoleEntries.Clear();
         IsConsoleExpanded = false;
-        StatusText = "控制台已清空";
+        SetStatus(GetString(ConsoleClearedKey, "控制台已清空"));
     }
 
     /// <summary>响应控制台集合变化，只刷新摘要，不抢夺用户的抽屉展开状态。</summary>
@@ -166,7 +166,7 @@ public sealed partial class TableKitPageViewModel
     }
 
     /// <summary>通过跨平台目录选择器设置 Luban 工作目录。</summary>
-    private async Task BrowseLubanWorkDirAsync() => await PickFolderAsync("选择 Luban 工作目录", LubanWorkDir, false, path =>
+    private async Task BrowseLubanWorkDirAsync() => await PickFolderAsync(GetString(PickWorkDirTitleKey, "选择 Luban 工作目录"), LubanWorkDir, false, path =>
     {
         LubanWorkDir = path;
         string currentConfig = ResolveInputPath(ConfigPath);
@@ -181,26 +181,101 @@ public sealed partial class TableKitPageViewModel
     {
         if (mLubanFilePicker == null)
         {
-            StatusDetailText = "当前窗口没有可用的 Luban.dll 文件选择器。";
+            StatusDetailText = GetString(NoLubanFilePickerKey, "当前窗口没有可用的 Luban.dll 文件选择器。");
             return;
         }
 
         string suggested = TableKitPathUtilities.FindPickerStartDirectory(mProjectRoot, LubanExecutablePath, true);
-        string? selected = await mLubanFilePicker.PickLubanDllAsync("选择 Luban.dll", suggestedPath: suggested);
+        string? selected = await mLubanFilePicker.PickLubanDllAsync(GetString(PickLubanDllTitleKey, "选择 Luban.dll"), suggestedPath: suggested);
         if (!string.IsNullOrWhiteSpace(selected))
         {
             LubanExecutablePath = ToProjectRelativePath(selected);
         }
     }
 
+    /// <summary>通过文件选择器设置可选 Luban.Agent 文件。</summary>
+    private async Task BrowseLubanAgentAsync()
+    {
+        await PickLubanToolAsync(
+            GetString(PickLubanAgentTitleKey, "选择 Luban.Agent.dll"),
+            "Luban.Agent.dll",
+            LubanAgentExecutablePath,
+            path => LubanAgentExecutablePath = path);
+    }
+
+    /// <summary>通过文件选择器设置可选 Luban.Mcp 文件。</summary>
+    private async Task BrowseLubanMcpAsync()
+    {
+        await PickLubanToolAsync(
+            GetString(PickLubanMcpTitleKey, "选择 Luban.Mcp.dll"),
+            "Luban.Mcp.dll",
+            LubanMcpExecutablePath,
+            path => LubanMcpExecutablePath = path);
+    }
+
+    /// <summary>通过目录选择器设置可选 Luban Skill 源目录。</summary>
+    private async Task BrowseLubanSkillsAsync()
+    {
+        await PickFolderAsync(
+            GetString(PickLubanSkillsTitleKey, "选择 Luban Skill 目录"),
+            LubanSkillsPath,
+            false,
+            path => LubanSkillsPath = path);
+    }
+
+    /// <summary>根据三个可选路径是否真实存在，生成给用户看的校验摘要。</summary>
+    private string CreateOptionalLubanToolsSummary()
+    {
+        int configured = CountExistingOptionalTools();
+        return configured == 0
+            ? GetString(OptionalLubanToolsEmptyKey, "未配置官方 Agent、MCP 或 Skill；旧版 Luban 可继续验证和生成。")
+            : string.Format(
+                GetString(OptionalLubanToolsReadyKey, "已识别 {0}/3 项官方 AI 路径。配表需求由 YokiFrame Skill 自动读取这些路径并导入官方 Skill。"),
+                configured);
+    }
+
+    /// <summary>统计当前页面已配置且实际存在的官方 AI 路径数量。</summary>
+    private int CountExistingOptionalTools()
+    {
+        int count = 0;
+        if (File.Exists(ResolveOptionalInputPath(LubanAgentExecutablePath))) count++;
+        if (File.Exists(ResolveOptionalInputPath(LubanMcpExecutablePath))) count++;
+        if (!string.IsNullOrWhiteSpace(ResolveOfficialSkillsRoot(LubanSkillsPath))) count++;
+        return count;
+    }
+
+    /// <summary>把用户选择的 Skill 根或 skills 子目录解析成包含官方 SKILL.md 的目录。</summary>
+    private string ResolveOfficialSkillsRoot(string path)
+    {
+        return LubanProjectDiscoveryService.ResolveOfficialSkillsRoot(ResolveOptionalInputPath(path));
+    }
+
+    /// <summary>按文件名过滤选择可选 Luban 工具，并将结果转换为项目相对路径。</summary>
+    /// <param name="title">文件选择器标题。</param>
+    /// <param name="fileName">允许选择的文件名。</param>
+    /// <param name="currentPath">字段当前显示的路径。</param>
+    /// <param name="apply">接收项目相对路径的更新回调。</param>
+    private async Task PickLubanToolAsync(string title, string fileName, string currentPath, Action<string> apply)
+    {
+        if (mLubanFilePicker == null)
+        {
+            StatusDetailText = GetString(NoLubanFilePickerKey, "当前窗口没有可用的 Luban 文件选择器。");
+            return;
+        }
+
+        string suggested = TableKitPathUtilities.FindPickerStartDirectory(mProjectRoot, currentPath, true);
+        string? selected = await mLubanFilePicker.PickLubanFileAsync(title, fileName, suggestedPath: suggested);
+        if (!string.IsNullOrWhiteSpace(selected)) apply(ToProjectRelativePath(selected));
+    }
+
     /// <summary>选择正式数据输出目录。</summary>
-    private async Task BrowseOutputDataAsync() => await PickFolderAsync("选择 TableKit 数据输出目录", OutputDataDir, false, path => OutputDataDir = path);
+    private async Task BrowseOutputDataAsync() => await PickFolderAsync(GetString(PickDataDirTitleKey, "选择 TableKit 数据输出目录"), OutputDataDir, false, path => OutputDataDir = path);
 
     /// <summary>选择正式代码输出目录。</summary>
-    private async Task BrowseOutputCodeAsync() => await PickFolderAsync("选择 TableKit 代码输出目录", OutputCodeDir, false, path => OutputCodeDir = path);
+    private async Task BrowseOutputCodeAsync() => await PickFolderAsync(GetString(PickCodeDirTitleKey, "选择 TableKit 代码输出目录"), OutputCodeDir, false, path => OutputCodeDir = path);
 
     /// <summary>选择编辑器读取的数据目录。</summary>
-    private async Task BrowseEditorDataAsync() => await PickFolderAsync("选择 TableKit 编辑器数据目录", EditorDataPath, false, path => EditorDataPath = path);
+    private async Task BrowseEditorDataAsync() => await PickFolderAsync(GetString(PickEditorDataDirTitleKey, "选择 TableKit 编辑器数据目录"), EditorDataPath, false, path => EditorDataPath = path);
 
     /// <summary>从字段当前路径打开选择器，并转换为项目相对路径。</summary>
     /// <param name="title">原生目录选择器标题。</param>
@@ -209,7 +284,7 @@ public sealed partial class TableKitPageViewModel
     /// <param name="apply">接收相对路径的字段更新回调。</param>
     private async Task PickFolderAsync(string title, string currentPath, bool isFilePath, Action<string> apply)
     {
-        if (mFolderPicker == null) { StatusDetailText = "当前窗口没有可用的目录选择器。"; return; }
+        if (mFolderPicker == null) { StatusDetailText = GetString(NoFolderPickerKey, "当前窗口没有可用的目录选择器。"); return; }
         string suggested = TableKitPathUtilities.FindPickerStartDirectory(mProjectRoot, currentPath, isFilePath);
         string? selected = await mFolderPicker.PickFolderAsync(title, suggestedPath: suggested);
         if (!string.IsNullOrWhiteSpace(selected)) apply(ToProjectRelativePath(selected));
@@ -220,13 +295,13 @@ public sealed partial class TableKitPageViewModel
     {
         string workDir = ResolveInputPath(LubanWorkDir);
         string target = Directory.Exists(Path.Combine(workDir, "Datas")) ? Path.Combine(workDir, "Datas") : workDir;
-        if (!Directory.Exists(target)) { StatusDetailText = "Luban 配置目录不存在: " + target; return Task.CompletedTask; }
+        if (!Directory.Exists(target)) { StatusDetailText = string.Format(GetString(ConfigDirMissingTemplateKey, "Luban 配置目录不存在: {0}"), target); return Task.CompletedTask; }
         ProcessStartInfo startInfo = new() { UseShellExecute = false, CreateNoWindow = true };
         if (OperatingSystem.IsWindows()) { startInfo.FileName = "explorer.exe"; startInfo.ArgumentList.Add(target); }
         else if (OperatingSystem.IsMacOS()) { startInfo.FileName = "open"; startInfo.ArgumentList.Add(target); }
         else { startInfo.FileName = "xdg-open"; startInfo.ArgumentList.Add(target); }
-        try { Process.Start(startInfo); StatusDetailText = "已打开配置表目录: " + target; }
-        catch (Exception exception) { StatusDetailText = "打开配置表目录失败: " + exception.Message; }
+        try { Process.Start(startInfo); StatusDetailText = string.Format(GetString(ConfigDirOpenedTemplateKey, "已打开配置表目录: {0}"), target); }
+        catch (Exception exception) { StatusDetailText = string.Format(GetString(ConfigDirOpenFailedTemplateKey, "打开配置表目录失败: {0}"), exception.Message); }
         return Task.CompletedTask;
     }
 
@@ -236,13 +311,13 @@ public sealed partial class TableKitPageViewModel
     internal void ApplyOperationResult(TableKitOperationResult result, bool showDataOnSuccess)
     {
         if (!string.IsNullOrWhiteSpace(result.Log)) AppendConsoleLines(result.Succeeded ? "INFO" : "ERROR", result.Log);
-        TablesType = result.Contract?.TablesType ?? "未解析";
-        DataExtension = result.Contract?.DataExtension ?? "未解析";
+        TablesType = result.Contract?.TablesType ?? GetString(UnresolvedKey, "未解析");
+        DataExtension = result.Contract?.DataExtension ?? GetString(UnresolvedKey, "未解析");
         PreviewDirectory = result.PreviewDirectory;
         if (showDataOnSuccess) ApplyPreviewTables(result.PreviewTables);
-        StatusText = result.Succeeded ? "成功" : "失败";
+        StatusText = result.Succeeded ? GetString(SuccessKey, "成功") : GetString(FailedShortKey, "失败");
         StatusDetailText = result.Succeeded
-            ? (result.Contract == null ? "操作完成。" : result.Contract.TablesType + " · " + result.Contract.DataTarget)
+            ? (result.Contract == null ? GetString(OperationDoneKey, "操作完成。") : result.Contract.TablesType + " · " + result.Contract.DataTarget)
             : string.Join("; ", result.Diagnostics);
         CommandPreviewText = CreateCommandPreview();
         RefreshEnvironment();
@@ -301,13 +376,44 @@ public sealed partial class TableKitPageViewModel
         bool configExists = File.Exists(ResolveInputPath(ConfigPath));
         bool executableExists = File.Exists(ResolveInputPath(LubanExecutablePath));
         LubanAvailable = configExists && executableExists;
+        RefreshOptionalLubanTools();
         OnPropertyChanged(nameof(LubanUnavailable));
         LubanStatusText = LubanAvailable ? "Luban ON" : "Luban OFF";
         EnvironmentMessage = LubanAvailable
-            ? "已找到 luban.conf 和 Luban 工具，可以执行验证与生成。"
-            : "请确认工作目录包含 luban.conf，并配置 Luban.dll 或可执行文件路径。";
+            ? GetString(EnvironmentReadyKey, "已找到 luban.conf 和 Luban 工具，可以执行验证与生成。")
+            : GetString(EnvironmentMissingKey, "请确认工作目录包含 luban.conf，并配置 Luban.dll 或可执行文件路径。");
         CommandPreviewText = CreateCommandPreview();
         OnPropertyChanged(nameof(LoaderText));
+    }
+
+    /// <summary>读取可选 AI 伴随工具路径；自动发现只补充空字段，不覆盖用户已配置的路径。</summary>
+    private void RefreshOptionalLubanTools()
+    {
+        LubanToolDiscoveryResult discovery = mService.DiscoverLubanTools(mProjectRoot, LubanWorkDir);
+        if (!discovery.Succeeded || discovery.Options == null)
+        {
+            return;
+        }
+
+        LubanToolOptions options = discovery.Options;
+        ApplyDiscoveredOptionalPath(ref mLubanAgentExecutablePath, nameof(LubanAgentExecutablePath), options.LubanAgentExecutablePath);
+        ApplyDiscoveredOptionalPath(ref mLubanMcpExecutablePath, nameof(LubanMcpExecutablePath), options.LubanMcpExecutablePath);
+        ApplyDiscoveredOptionalPath(ref mLubanSkillsPath, nameof(LubanSkillsPath), options.LubanSkillsPath);
+        OnPropertyChanged(nameof(AgentAvailable));
+        OnPropertyChanged(nameof(OptionalLubanToolsSummary));
+    }
+
+    /// <summary>把自动发现结果写入仍为空的可选路径字段，避免刷新覆盖显式选择。</summary>
+    /// <param name="currentPath">当前字段的项目相对路径。</param>
+    /// <param name="propertyName">需要通知的绑定属性名。</param>
+    /// <param name="discoveredPath">自动发现的绝对路径。</param>
+    private void ApplyDiscoveredOptionalPath(ref string currentPath, string propertyName, string discoveredPath)
+    {
+        if (!string.IsNullOrWhiteSpace(currentPath) || string.IsNullOrWhiteSpace(discoveredPath)) return;
+        string projectedPath = ToProjectRelativePath(discoveredPath);
+        if (string.Equals(currentPath, projectedPath, StringComparison.Ordinal)) return;
+        currentPath = projectedPath;
+        OnPropertyChanged(propertyName);
     }
 
     /// <summary>构建当前配置的命令预览，不执行任何外部进程。</summary>
@@ -327,6 +433,9 @@ public sealed partial class TableKitPageViewModel
             ProjectRoot = mProjectRoot,
             LubanConfigPath = ResolveInputPath(ConfigPath),
             LubanExecutablePath = ResolveInputPath(LubanExecutablePath),
+            LubanAgentExecutablePath = ResolveOptionalInputPath(LubanAgentExecutablePath),
+            LubanMcpExecutablePath = ResolveOptionalInputPath(LubanMcpExecutablePath),
+            LubanSkillsPath = ResolveOptionalInputPath(LubanSkillsPath),
             LubanWorkDir = ResolveInputPath(LubanWorkDir),
             TargetName = string.IsNullOrWhiteSpace(TargetName) ? "client" : TargetName,
             CodeTarget = string.IsNullOrWhiteSpace(CodeTarget) ? "cs-bin" : CodeTarget,
@@ -351,6 +460,9 @@ public sealed partial class TableKitPageViewModel
     {
         mConfigPath = ToProjectRelativePath(options.LubanConfigPath);
         mLubanExecutablePath = ToProjectRelativePath(options.LubanExecutablePath);
+        mLubanAgentExecutablePath = ToProjectRelativePath(options.LubanAgentExecutablePath);
+        mLubanMcpExecutablePath = ToProjectRelativePath(options.LubanMcpExecutablePath);
+        mLubanSkillsPath = ToProjectRelativePath(options.LubanSkillsPath);
         mLubanWorkDir = ToProjectRelativePath(options.LubanWorkDir);
         mTargetName = string.IsNullOrWhiteSpace(options.TargetName) ? "client" : options.TargetName;
         mCodeTarget = string.IsNullOrWhiteSpace(options.CodeTarget) ? "cs-bin" : options.CodeTarget;
@@ -408,6 +520,14 @@ public sealed partial class TableKitPageViewModel
         return TableKitPathUtilities.Resolve(mProjectRoot, path);
     }
 
+    /// <summary>解析可选工具路径；未发现时保持空文本，避免把项目根误写成工具路径。</summary>
+    /// <param name="path">可选的项目相对或绝对路径。</param>
+    /// <returns>规范化绝对路径或空文本。</returns>
+    private string ResolveOptionalInputPath(string path)
+    {
+        return string.IsNullOrWhiteSpace(path) ? string.Empty : ResolveInputPath(path);
+    }
+
     /// <summary>将项目内绝对路径折叠为稳定的项目相对路径。</summary>
     private string ToProjectRelativePath(string path)
     {
@@ -458,7 +578,9 @@ public sealed partial class TableKitPageViewModel
         try
         {
             TableKitRuntimeLocation location = mResourceLocationResolver.Resolve(CreateOptions());
-            return location.IsAddressable ? "按 Luban 表名寻址" : location.PathPattern;
+            return location.IsAddressable
+                ? GetString(AddressableModeKey, "按 Luban 表名寻址")
+                : location.PathPattern;
         }
         catch (Exception exception) when (exception is InvalidDataException or ArgumentException)
         {
@@ -479,6 +601,11 @@ public sealed partial class TableKitPageViewModel
     {
         OnPropertyChanged(nameof(ConfigPath));
         OnPropertyChanged(nameof(LubanExecutablePath));
+        OnPropertyChanged(nameof(LubanAgentExecutablePath));
+        OnPropertyChanged(nameof(AgentAvailable));
+        OnPropertyChanged(nameof(LubanMcpExecutablePath));
+        OnPropertyChanged(nameof(LubanSkillsPath));
+        OnPropertyChanged(nameof(OptionalLubanToolsSummary));
         OnPropertyChanged(nameof(LubanWorkDir));
         OnPropertyChanged(nameof(TargetName));
         OnPropertyChanged(nameof(CodeTarget));
@@ -496,4 +623,105 @@ public sealed partial class TableKitPageViewModel
         OnPropertyChanged(nameof(UseAssemblyDefinition));
         OnPropertyChanged(nameof(AssemblyName));
     }
+
+    /// <summary>正在验证状态资源 key。</summary>
+    private const string ValidatingKey = "String.TableKit.Validating";
+
+    /// <summary>正在读取临时输出提示资源 key。</summary>
+    private const string ReadingTempOutputKey = "String.TableKit.ReadingTempOutput";
+
+    /// <summary>开始验证提示资源 key。</summary>
+    private const string StartValidateKey = "String.TableKit.StartValidate";
+
+    /// <summary>target 列表已刷新提示资源 key。</summary>
+    private const string TargetsRefreshedKey = "String.TableKit.TargetsRefreshed";
+
+    /// <summary>luban.conf 解析失败模板资源 key。</summary>
+    private const string ConfParseFailedTemplateKey = "String.TableKit.ConfParseFailedTemplate";
+
+    /// <summary>配置已保存提示资源 key。</summary>
+    private const string ConfigSavedKey = "String.TableKit.ConfigSaved";
+
+    /// <summary>已保存详情占位资源 key。</summary>
+    private const string SavedDetailKey = "String.TableKit.SavedDetail";
+
+    /// <summary>保存失败短状态资源 key。</summary>
+    private const string SaveFailedShortKey = "String.TableKit.SaveFailedShort";
+
+    /// <summary>保存失败模板资源 key。</summary>
+    private const string SaveFailedTemplateKey = "String.TableKit.SaveFailedTemplate";
+
+    /// <summary>还原完成提示资源 key。</summary>
+    private const string ResetDoneKey = "String.TableKit.ResetDone";
+
+    /// <summary>已还原默认详情占位资源 key。</summary>
+    private const string ResetDetailKey = "String.TableKit.ResetDetail";
+
+    /// <summary>无剪贴板服务提示资源 key。</summary>
+    private const string NoClipboardKey = "String.TableKit.NoClipboard";
+
+    /// <summary>控制台已复制提示资源 key。</summary>
+    private const string ConsoleCopiedKey = "String.TableKit.ConsoleCopied";
+
+    /// <summary>控制台已清空提示资源 key。</summary>
+    private const string ConsoleClearedKey = "String.TableKit.ConsoleCleared";
+
+    /// <summary>选择工作目录标题资源 key。</summary>
+    private const string PickWorkDirTitleKey = "String.TableKit.PickWorkDirTitle";
+
+    /// <summary>无 Luban.dll 选择器提示资源 key。</summary>
+    private const string NoLubanFilePickerKey = "String.TableKit.NoLubanFilePicker";
+
+    /// <summary>选择 Luban.dll 标题资源 key。</summary>
+    private const string PickLubanDllTitleKey = "String.TableKit.PickLubanDllTitle";
+
+    /// <summary>选择 Luban.Agent 标题资源 key。</summary>
+    private const string PickLubanAgentTitleKey = "String.TableKit.PickLubanAgentTitle";
+
+    /// <summary>选择 Luban.Mcp 标题资源 key。</summary>
+    private const string PickLubanMcpTitleKey = "String.TableKit.PickLubanMcpTitle";
+
+    /// <summary>选择 Luban Skill 目录标题资源 key。</summary>
+    private const string PickLubanSkillsTitleKey = "String.TableKit.PickLubanSkillsTitle";
+
+    /// <summary>选择数据目录标题资源 key。</summary>
+    private const string PickDataDirTitleKey = "String.TableKit.PickDataDirTitle";
+
+    /// <summary>选择代码目录标题资源 key。</summary>
+    private const string PickCodeDirTitleKey = "String.TableKit.PickCodeDirTitle";
+
+    /// <summary>选择编辑器数据目录标题资源 key。</summary>
+    private const string PickEditorDataDirTitleKey = "String.TableKit.PickEditorDataDirTitle";
+
+    /// <summary>无目录选择器提示资源 key。</summary>
+    private const string NoFolderPickerKey = "String.TableKit.NoFolderPicker";
+
+    /// <summary>配置目录不存在模板资源 key。</summary>
+    private const string ConfigDirMissingTemplateKey = "String.TableKit.ConfigDirMissingTemplate";
+
+    /// <summary>配置目录已打开模板资源 key。</summary>
+    private const string ConfigDirOpenedTemplateKey = "String.TableKit.ConfigDirOpenedTemplate";
+
+    /// <summary>配置目录打开失败模板资源 key。</summary>
+    private const string ConfigDirOpenFailedTemplateKey = "String.TableKit.ConfigDirOpenFailedTemplate";
+
+    /// <summary>成功短状态资源 key。</summary>
+    private const string SuccessKey = "String.TableKit.Success";
+
+    /// <summary>失败短状态资源 key。</summary>
+    private const string FailedShortKey = "String.TableKit.FailedShort";
+
+    /// <summary>操作完成提示资源 key。</summary>
+    private const string OperationDoneKey = "String.TableKit.OperationDone";
+
+    /// <summary>环境就绪提示资源 key。</summary>
+    private const string EnvironmentReadyKey = "String.TableKit.EnvironmentReady";
+
+    /// <summary>环境缺失提示资源 key。</summary>
+    private const string EnvironmentMissingKey = "String.TableKit.EnvironmentMissing";
+
+    /// <summary>可寻址模式说明资源 key。</summary>
+    private const string AddressableModeKey = "String.TableKit.AddressableMode";
+    private const string OptionalLubanToolsEmptyKey = "String.TableKit.OptionalLubanToolsEmpty";
+    private const string OptionalLubanToolsReadyKey = "String.TableKit.OptionalLubanToolsReady";
 }

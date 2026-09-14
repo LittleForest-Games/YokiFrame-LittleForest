@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Skia;
 using Avalonia.Win32;
+using YokiFrame;
+using YokiFrame.RuntimeCache;
 using YokiFrame.Workbench.Avalonia.Diagnostics;
 using YokiFrame.Workbench.Avalonia.Services;
 
@@ -32,6 +34,8 @@ internal static class Program
         var appBaseDirectory = AppContext.BaseDirectory;
         var options = ToolStartupOptions.FromArgs(args, currentDirectory, appBaseDirectory);
         WorkbenchStartupTrace.Configure(options);
+        using var runtimeLease = TryAcquireRuntimeLease(options);
+        TryPruneProjectStorage(options);
         WorkbenchStartupTrace.Mark("main.enter");
         using var activationCoordinator = CreateActivationCoordinator(options);
         if (activationCoordinator?.ActivationRedirected == true)
@@ -73,6 +77,54 @@ internal static class Program
         return options.Mode == ToolStartupMode.Workbench
             ? WorkbenchActivationCoordinator.Start(options.ProjectRoot)
             : null;
+    }
+
+    /// <summary>
+    /// 在 Workbench 启动阶段回收项目级过期证据；清理失败不能阻断 UI 启动。
+    /// </summary>
+    /// <param name="options">已解析的工具启动选项。</param>
+    private static void TryPruneProjectStorage(ToolStartupOptions options)
+    {
+        if (options.Mode != ToolStartupMode.Workbench)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = YokiFrameFileBridgePruner.Prune(options.ProjectRoot);
+        }
+        catch (Exception exception)
+        {
+            WorkbenchStartupTrace.Mark("storage-cleanup.failed." + exception.GetType().Name);
+        }
+    }
+
+    /// <summary>
+    /// 在 Workbench 生命周期内保护启动时指向的 Runtime fingerprint，避免后台清理误删正在运行的文件。
+    /// </summary>
+    /// <param name="options">已解析的启动选项。</param>
+    /// <returns>当前 Runtime lease；无有效指针或目录时返回空。</returns>
+    private static RuntimeCacheLease? TryAcquireRuntimeLease(ToolStartupOptions options)
+    {
+        if (options.Mode != ToolStartupMode.Workbench)
+        {
+            return null;
+        }
+
+        var fingerprint = WorkbenchRuntimeUpdateService.ReadCurrentFingerprint(options.ProjectRoot);
+        if (string.IsNullOrWhiteSpace(fingerprint))
+        {
+            return null;
+        }
+
+        var lease = RuntimeCacheLease.TryAcquire(options.ProjectRoot, fingerprint);
+        if (lease == null)
+        {
+            WorkbenchStartupTrace.Mark("runtime-cache.lease-unavailable");
+        }
+
+        return lease;
     }
 
     /// <summary>

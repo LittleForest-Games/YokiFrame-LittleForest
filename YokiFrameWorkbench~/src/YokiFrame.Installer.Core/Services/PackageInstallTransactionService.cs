@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using YokiFrame.Installer.Core.IO;
 using YokiFrame.Installer.Core.Models;
 
@@ -9,9 +8,6 @@ namespace YokiFrame.Installer.Core.Services;
 /// </summary>
 public sealed partial class PackageInstallTransactionService
 {
-    private const int DIRECTORY_MOVE_MAX_ATTEMPTS = 20;
-    private const int DIRECTORY_MOVE_RETRY_DELAY_MILLISECONDS = 100;
-
     private readonly IPackageInstallTransactionFaultInjector mFaultInjector;
     private readonly PackageOwnerManifestStore mManifestStore = new();
     private readonly PackageOwnershipInspector mOwnershipInspector = new();
@@ -47,15 +43,26 @@ public sealed partial class PackageInstallTransactionService
         string projectRoot,
         string targetPackageRoot,
         UnmanagedPackagePolicy policy,
-        bool replaceModifiedPackage = false)
+        bool replaceModifiedPackage = false,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(projection);
+        cancellationToken.ThrowIfCancellationRequested();
+        var context = CreateContext(projection, projectRoot, targetPackageRoot);
+        var ownership = mOwnershipInspector.Inspect(context.TargetPackageRoot);
+        RejectUnsafeOwnership(ownership, policy, replaceModifiedPackage);
+        context.ReplacedExistingPackage = Directory.Exists(context.TargetPackageRoot);
+
+        using var projectLock = InstallerProjectLock.Acquire(projectRoot);
+        // 独立调用入口自行恢复；UnityInstallService 的持锁重载已由外层 Installer 恢复。
+        InstallerPackageTransactionRecovery.Recover(projectRoot);
         return Execute(
-            projection,
-            projectRoot,
-            targetPackageRoot,
+            context,
             policy,
             replaceModifiedPackage,
-            postCommitAction: null);
+            projectLock,
+            postCommitAction: null,
+            cancellationToken);
     }
 
     /// <summary>
@@ -75,18 +82,87 @@ public sealed partial class PackageInstallTransactionService
         string targetPackageRoot,
         UnmanagedPackagePolicy policy,
         bool replaceModifiedPackage,
-        Action? postCommitAction)
+        Action? postCommitAction,
+        CancellationToken cancellationToken = default)
     {
         var context = CreateContext(projection, projectRoot, targetPackageRoot);
         var ownership = mOwnershipInspector.Inspect(context.TargetPackageRoot);
         RejectUnsafeOwnership(ownership, policy, replaceModifiedPackage);
         context.ReplacedExistingPackage = Directory.Exists(context.TargetPackageRoot);
 
+        using var projectLock = InstallerProjectLock.Acquire(projectRoot);
+        return Execute(
+            context,
+            policy,
+            replaceModifiedPackage,
+            projectLock,
+            postCommitAction,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// 在调用方已经持有项目锁时执行包事务，确保 manifest 等 post-commit 操作与目录切换使用同一锁。
+    /// </summary>
+    /// <remarks>
+    /// 恢复由 UnityInstallService 在最终计划前负责；公开独立入口只在持锁后恢复一次，避免事务层重复扫描 journal。
+    /// </remarks>
+    /// <param name="projection">待提交投影。</param>
+    /// <param name="projectRoot">目标项目根目录。</param>
+    /// <param name="targetPackageRoot">正式受管包根目录。</param>
+    /// <param name="policy">legacy 包接管策略。</param>
+    /// <param name="replaceModifiedPackage">是否允许覆盖受管修改。</param>
+    /// <param name="projectLock">当前项目锁租约。</param>
+    /// <param name="postCommitAction">目录提交后的外部持久化验证。</param>
+    /// <returns>成功提交结果。</returns>
+    internal PackageInstallTransactionResult Execute(
+        PackageProjection projection,
+        string projectRoot,
+        string targetPackageRoot,
+        UnmanagedPackagePolicy policy,
+        bool replaceModifiedPackage,
+        InstallerProjectLockLease projectLock,
+        Action? postCommitAction,
+        CancellationToken cancellationToken = default)
+    {
+        var context = CreateContext(projection, projectRoot, targetPackageRoot);
+        InstallerDirectorySwapTransaction.ValidateProjectLock(projectRoot, projectLock);
+        return Execute(
+            context,
+            policy,
+            replaceModifiedPackage,
+            projectLock,
+            postCommitAction,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// 在已完成初始只读检查且持有项目锁时执行实际目录事务。
+    /// </summary>
+    /// <param name="context">已创建且路径受守卫的事务上下文。</param>
+    /// <param name="policy">legacy 包接管策略。</param>
+    /// <param name="replaceModifiedPackage">是否允许覆盖受管修改。</param>
+    /// <param name="projectLock">当前项目锁租约。</param>
+    /// <param name="postCommitAction">目录提交后的外部持久化验证。</param>
+    /// <returns>成功提交结果。</returns>
+    private PackageInstallTransactionResult Execute(
+        TransactionContext context,
+        UnmanagedPackagePolicy policy,
+        bool replaceModifiedPackage,
+        InstallerProjectLockLease projectLock,
+        Action? postCommitAction,
+        CancellationToken cancellationToken)
+    {
+        InstallerDirectorySwapTransaction.ValidateProjectLock(context.ProjectRoot, projectLock);
+        var ownership = mOwnershipInspector.Inspect(context.TargetPackageRoot);
+        RejectUnsafeOwnership(ownership, policy, replaceModifiedPackage);
+        context.ReplacedExistingPackage = Directory.Exists(context.TargetPackageRoot);
+        context.InitializeJournal();
+
         try
         {
-            StageProjection(context);
-            MoveExistingPackageToBackup(context);
-            CommitStaging(context);
+            StageProjection(context, cancellationToken);
+            MoveExistingPackageToBackup(context, cancellationToken);
+            CommitStaging(context, cancellationToken);
             VerifyCommittedPackage(context);
             postCommitAction?.Invoke();
             CompleteTransaction(context);
@@ -95,9 +171,31 @@ public sealed partial class PackageInstallTransactionService
                 mManifestStore.GetManifestPath(context.TargetPackageRoot),
                 context.ReplacedExistingPackage);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !context.CommitStarted)
+        {
+            var rollbackSucceeded = TryRollback(context);
+            rollbackSucceeded = InstallerDirectorySwapTransaction.CompleteFailureJournal(
+                context.Journal,
+                rollbackSucceeded);
+            if (rollbackSucceeded)
+            {
+                throw;
+            }
+
+            var cancellation = new OperationCanceledException(cancellationToken);
+            var evidencePath = WriteFailureEvidence(context, rollbackSucceeded, cancellation);
+            throw new PackageInstallTransactionException(
+                "YokiFrame package transaction cancellation rollback was incomplete.",
+                evidencePath,
+                rollbackSucceeded,
+                cancellation);
+        }
         catch (Exception exception) when (exception is not PackageInstallRejectedException)
         {
             var rollbackSucceeded = TryRollback(context);
+            rollbackSucceeded = InstallerDirectorySwapTransaction.CompleteFailureJournal(
+                context.Journal,
+                rollbackSucceeded);
             var evidencePath = WriteFailureEvidence(context, rollbackSucceeded, exception);
             throw new PackageInstallTransactionException(
                 "YokiFrame package transaction failed at " + context.Checkpoint + ".",
@@ -106,6 +204,7 @@ public sealed partial class PackageInstallTransactionService
                 exception);
         }
     }
+
 
     /// <summary>
     /// 规范化并验证项目、目标包与每个投影路径，确保写入范围不会逃逸。
@@ -182,61 +281,41 @@ public sealed partial class PackageInstallTransactionService
     }
 
     /// <summary>
-    /// 将全部投影文件和 owner manifest 写入隔离 staging，并用 manifest 立即复验。
+    /// 将全部投影文件和 owner manifest 写入隔离 staging，并立即复验；原子操作由共享目录交换事务承载。
     /// </summary>
     /// <param name="context">事务上下文。</param>
-    private void StageProjection(TransactionContext context)
+    private void StageProjection(TransactionContext context, CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(context.StagingPackageRoot);
-        foreach (var file in context.Projection.Files)
-        {
-            var targetPath = InstallerPathGuard.CombineInside(
-                context.StagingPackageRoot,
-                file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-            File.Copy(file.SourcePath, targetPath, overwrite: false);
-            VerifyProjectedFile(targetPath, file);
-        }
-
-        mManifestStore.Write(context.StagingPackageRoot, mManifestStore.Create(context.Projection));
-        var stagingInspection = mOwnershipInspector.Inspect(context.StagingPackageRoot);
-        if (stagingInspection.State != PackageOwnershipState.Clean)
-        {
-            throw new IOException("Staging verification failed: " + string.Join(", ", stagingInspection.ConflictPaths));
-        }
-
+        InstallerDirectorySwapTransaction.StageFiles(
+            context.StagingPackageRoot,
+            context.Projection,
+            mManifestStore,
+            mOwnershipInspector,
+            "YokiFrame package transaction",
+            cancellationToken);
         AdvanceCheckpoint(context, PackageInstallTransactionCheckpoint.StagingVerified);
-    }
-
-    /// <summary>
-    /// 校验 staging 文件长度和 SHA-256，捕获复制期间的源文件变化或磁盘写入损坏。
-    /// </summary>
-    /// <param name="targetPath">staging 文件路径。</param>
-    /// <param name="expected">投影中的期望摘要。</param>
-    private static void VerifyProjectedFile(string targetPath, PackageProjectionFile expected)
-    {
-        FileInfo info = new(targetPath);
-        using var stream = File.OpenRead(targetPath);
-        var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-        if (info.Length != expected.Length || !string.Equals(hash, expected.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new IOException("Staged file hash mismatch: " + expected.RelativePath);
-        }
     }
 
     /// <summary>
     /// 将已有正式包目录移动到同项目事务备份区，保证提交前存在完整恢复源。
     /// </summary>
     /// <param name="context">事务上下文。</param>
-    private void MoveExistingPackageToBackup(TransactionContext context)
+    /// <summary>
+    /// 将已有正式包目录移动到同项目事务备份区，保证提交前存在完整恢复源。
+    /// </summary>
+    /// <param name="context">事务上下文。</param>
+    private void MoveExistingPackageToBackup(
+        TransactionContext context,
+        CancellationToken cancellationToken)
     {
-        if (!Directory.Exists(context.TargetPackageRoot))
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!InstallerDirectorySwapTransaction.BackupExistingDirectory(
+                context.TargetPackageRoot,
+                context.BackupPackageRoot))
         {
             return;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(context.BackupPackageRoot)!);
-        MoveDirectoryWithRetry(context.TargetPackageRoot, context.BackupPackageRoot);
         context.ExistingPackageBackedUp = true;
         AdvanceCheckpoint(context, PackageInstallTransactionCheckpoint.ExistingPackageBackedUp);
     }
@@ -245,60 +324,17 @@ public sealed partial class PackageInstallTransactionService
     /// 把已验证 staging 目录移动为正式包根，目录移动限定在同一项目卷内。
     /// </summary>
     /// <param name="context">事务上下文。</param>
-    private void CommitStaging(TransactionContext context)
+    private void CommitStaging(
+        TransactionContext context,
+        CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(context.TargetPackageRoot)!);
-        MoveDirectoryWithRetry(context.StagingPackageRoot, context.TargetPackageRoot);
+        cancellationToken.ThrowIfCancellationRequested();
+        context.CommitStarted = true;
+        InstallerDirectorySwapTransaction.CommitStagedDirectory(
+            context.StagingPackageRoot,
+            context.TargetPackageRoot);
         context.TargetCommitted = true;
         AdvanceCheckpoint(context, PackageInstallTransactionCheckpoint.TargetCommitted);
-    }
-
-    /// <summary>
-    /// 在 Windows 文件扫描器短暂占用包文件时有界重试目录切换，超过窗口后保留原始异常进入回滚。
-    /// </summary>
-    /// <param name="sourcePath">必须仍然存在的源目录。</param>
-    /// <param name="destinationPath">尚未存在的目标目录。</param>
-    private static void MoveDirectoryWithRetry(string sourcePath, string destinationPath)
-    {
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                Directory.Move(sourcePath, destinationPath);
-                return;
-            }
-            catch (Exception exception) when (CanRetryDirectoryMove(
-                       sourcePath,
-                       destinationPath,
-                       attempt,
-                       exception))
-            {
-                Thread.Sleep(DIRECTORY_MOVE_RETRY_DELAY_MILLISECONDS);
-            }
-        }
-    }
-
-    /// <summary>
-    /// 仅重试源目录仍存在、目标尚未创建的短暂 IO 或访问冲突，避免掩盖路径和目标冲突错误。
-    /// </summary>
-    /// <param name="sourcePath">目录移动源路径。</param>
-    /// <param name="destinationPath">目录移动目标路径。</param>
-    /// <param name="attempt">当前尝试序号，从 1 开始。</param>
-    /// <param name="exception">本次目录移动异常。</param>
-    /// <returns>仍处于有界重试窗口且错误可能由短暂占用引起时返回 true。</returns>
-    private static bool CanRetryDirectoryMove(
-        string sourcePath,
-        string destinationPath,
-        int attempt,
-        Exception exception)
-    {
-        return attempt < DIRECTORY_MOVE_MAX_ATTEMPTS
-            && exception is IOException or UnauthorizedAccessException
-            && exception is not DirectoryNotFoundException
-            && exception is not PathTooLongException
-            && Directory.Exists(sourcePath)
-            && !Directory.Exists(destinationPath)
-            && !File.Exists(destinationPath);
     }
 
     /// <summary>
@@ -307,11 +343,10 @@ public sealed partial class PackageInstallTransactionService
     /// <param name="context">事务上下文。</param>
     private void VerifyCommittedPackage(TransactionContext context)
     {
-        var inspection = mOwnershipInspector.Inspect(context.TargetPackageRoot);
-        if (inspection.State != PackageOwnershipState.Clean)
-        {
-            throw new IOException("Committed package verification failed: " + string.Join(", ", inspection.ConflictPaths));
-        }
+        InstallerDirectorySwapTransaction.EnsureOwnershipClean(
+            context.TargetPackageRoot,
+            mOwnershipInspector,
+            "Committed package verification failed");
     }
 
     /// <summary>
@@ -320,8 +355,10 @@ public sealed partial class PackageInstallTransactionService
     /// <param name="context">事务上下文。</param>
     private static void CompleteTransaction(TransactionContext context)
     {
+        context.Journal?.Advance(InstallerTransactionPhase.PostVerified);
         DeleteDirectoryIfExists(context.StagingTransactionRoot);
         DeleteDirectoryIfExists(context.BackupTransactionRoot);
+        context.Journal?.Complete();
     }
 
     /// <summary>
@@ -332,6 +369,13 @@ public sealed partial class PackageInstallTransactionService
     private void AdvanceCheckpoint(TransactionContext context, PackageInstallTransactionCheckpoint checkpoint)
     {
         context.Checkpoint = checkpoint;
+        context.Journal?.Advance(checkpoint switch
+        {
+            PackageInstallTransactionCheckpoint.StagingVerified => InstallerTransactionPhase.StagingVerified,
+            PackageInstallTransactionCheckpoint.ExistingPackageBackedUp => InstallerTransactionPhase.ExistingTargetBackedUp,
+            PackageInstallTransactionCheckpoint.TargetCommitted => InstallerTransactionPhase.TargetCommitted,
+            _ => throw new ArgumentOutOfRangeException(nameof(checkpoint), checkpoint, "Unsupported package transaction checkpoint.")
+        });
         mFaultInjector.OnCheckpoint(checkpoint);
     }
 
@@ -349,6 +393,7 @@ public sealed partial class PackageInstallTransactionService
         public TransactionContext(PackageProjection projection, string projectRoot, string targetPackageRoot)
         {
             Projection = projection;
+            ProjectRoot = projectRoot;
             TargetPackageRoot = targetPackageRoot;
             TransactionId = Guid.NewGuid().ToString("N");
             var installerRoot = InstallerPathGuard.CombineInside(projectRoot, ".yokiframe", "installer");
@@ -363,6 +408,16 @@ public sealed partial class PackageInstallTransactionService
         /// 获取待提交投影。
         /// </summary>
         public PackageProjection Projection { get; }
+
+        /// <summary>
+        /// 获取事务所属的规范化项目根。
+        /// </summary>
+        public string ProjectRoot { get; }
+
+        /// <summary>
+        /// 获取或设置持久事务 journal。
+        /// </summary>
+        public InstallerTransactionJournal? Journal { get; private set; }
 
         /// <summary>
         /// 获取事务标识。
@@ -400,6 +455,21 @@ public sealed partial class PackageInstallTransactionService
         public string DiagnosticEvidencePath { get; }
 
         /// <summary>
+        /// 创建持久 journal；调用方已完成路径和所有权检查并持有项目锁。
+        /// </summary>
+        public void InitializeJournal()
+        {
+            Journal = InstallerTransactionJournal.Create(
+                ProjectRoot,
+                "unity-package",
+                TransactionId,
+                TargetPackageRoot,
+                StagingTransactionRoot,
+                BackupTransactionRoot,
+                ReplacedExistingPackage);
+        }
+
+        /// <summary>
         /// 获取或设置是否替换已有包。
         /// </summary>
         public bool ReplacedExistingPackage { get; set; }
@@ -413,6 +483,11 @@ public sealed partial class PackageInstallTransactionService
         /// 获取或设置新包是否已成为正式目录。
         /// </summary>
         public bool TargetCommitted { get; set; }
+
+        /// <summary>
+        /// 获取或设置目录提交是否已经开始；开始后外部取消只能在事务完成或回滚后生效。
+        /// </summary>
+        public bool CommitStarted { get; set; }
 
         /// <summary>
         /// 获取或设置当前稳定检查点。

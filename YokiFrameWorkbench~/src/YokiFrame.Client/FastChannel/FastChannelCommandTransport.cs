@@ -1,3 +1,4 @@
+using System.Text.Json;
 using YokiFrame;
 using YokiFrame.Client.Commands;
 using YokiFrame.Client.Transports.FileBridge;
@@ -14,9 +15,14 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
 {
     private const int MAX_CONNECT_TIMEOUT_MS = 500;
     private const int MAX_OPERATION_TIMEOUT_MS = 750;
+    private const int DISPOSE_WAIT_MS = 500;
+    // registry 缓存以 engine.json 的最后写入时间作为变化信号：每次只读发送仅一次元数据 stat，
+    // 文件未变化时复用上轮解析结果，避免全目录枚举；宿主身份最终仍由握手与 EndpointsMatch 把关。
     private readonly FileBridgeTransport mFileBridgeTransport;
     private readonly SemaphoreSlim mConnectionGate = new(1, 1);
-    private readonly Dictionary<string, CachedFastChannelConnection> mConnections = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, FastChannelConnection> mConnections = new(StringComparer.Ordinal);
+    private readonly object mRegistryCacheGate = new();
+    private readonly Dictionary<string, CachedRegistryEntry> mRegistryCache = new(StringComparer.Ordinal);
     private int mDisposed;
 
     /// <summary>
@@ -36,7 +42,7 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
     /// <param name="action">目标 action。</param>
     /// <param name="payloadJson">只读查询 payload。</param>
     /// <param name="source">审计来源。</param>
-    /// <param name="timeoutMs">命令和快速通道操作的最大等待毫秒数。</param>
+    /// <param name="timeoutMs">调用方为本次快速通道操作分配的本地最大等待毫秒数；线上信封会单独遵守协议超时范围。</param>
     /// <param name="cancellationToken">外部取消令牌。</param>
     /// <returns>Host 返回且已校验关联字段的 terminal response。</returns>
     public async Task<CommandResponse> SendReadOnlyCommandAsync(
@@ -49,6 +55,18 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
+        if (timeoutMs <= 0)
+        {
+            throw FastChannelConnectorUtilities.CreateProtocolException(
+                "InvalidTimeout",
+                "FastChannel operation timeout must be greater than zero milliseconds.",
+                "Pass a positive timeout value; the wire envelope will use the Runtime minimum when needed.");
+        }
+
+        // FastChannel 可以使用比 FileBridge 更短的本地操作期限，但 Host 仍会按
+        // CommandPolicy 解析信封中的 timeoutMs；两者不能共用一个小于协议下限的值。
+        var operationTimeoutMs = timeoutMs;
+        var envelopeTimeoutMs = Math.Max(timeoutMs, CommandEnvelope.COMMAND_TIMEOUT_MIN_MS);
         var envelope = CommandEnvelope.Create(
             engineId,
             source,
@@ -56,21 +74,21 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
             kit,
             action,
             payloadJson,
-            timeoutMs);
+            envelopeTimeoutMs);
         var endpoint = await ResolveEndpointAsync(envelope.EngineId).ConfigureAwait(false);
         if (!endpoint.SupportsReadOnlyCommand(envelope.Kit, envelope.Action))
         {
-            throw CreateProtocolException(
+            throw FastChannelConnectorUtilities.CreateProtocolException(
                 "FastChannelCommandUnsupported",
                 "The current endpoint does not advertise this command as read-only.",
                 "Use reliable FileBridge for this command.");
         }
         FastChannelConnection? connection = null;
-        using var operationSource = CreateOperationCancellationSource(envelope.TimeoutMs, cancellationToken);
+        using var operationSource = CreateOperationCancellationSource(operationTimeoutMs, cancellationToken);
         try
         {
             connection = await GetOrCreateConnectionAsync(endpoint, operationSource.Token).ConfigureAwait(false);
-            var request = new FastChannelFrame(
+            var request = new YokiFrameFastChannelFrame(
                 YokiFrameFastChannelMessageKind.Command,
                 0,
                 envelope.ToJson());
@@ -93,7 +111,7 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
                 await InvalidateConnectionAsync(envelope.EngineId, connection).ConfigureAwait(false);
             }
 
-            throw CreateProtocolException(
+            throw FastChannelConnectorUtilities.CreateProtocolException(
                 "FastChannelCommandTimeout",
                 "FastChannel command did not complete before the short operation deadline.",
                 "Use FileBridge fallback or wait for the engine adapter to become responsive.");
@@ -142,15 +160,16 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         }
 
         CancelActiveConnectionAttempt();
-        List<CachedFastChannelConnection> cachedConnections;
-        if (!mConnectionGate.Wait(TimeSpan.FromSeconds(2)))
+        List<FastChannelConnection> cachedConnections;
+        if (!mConnectionGate.Wait(DISPOSE_WAIT_MS))
         {
+            _ = CompleteDeferredDisposeAsync();
             return;
         }
 
         try
         {
-            cachedConnections = new List<CachedFastChannelConnection>(mConnections.Values);
+            cachedConnections = new List<FastChannelConnection>(mConnections.Values);
             mConnections.Clear();
         }
         finally
@@ -170,11 +189,15 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         }
 
         CancelActiveConnectionAttempt();
-        await mConnectionGate.WaitAsync().ConfigureAwait(false);
-        List<CachedFastChannelConnection> cachedConnections;
+        if (!await mConnectionGate.WaitAsync(DISPOSE_WAIT_MS).ConfigureAwait(false))
+        {
+            _ = CompleteDeferredDisposeAsync();
+            return;
+        }
+        List<FastChannelConnection> cachedConnections;
         try
         {
-            cachedConnections = new List<CachedFastChannelConnection>(mConnections.Values);
+            cachedConnections = new List<FastChannelConnection>(mConnections.Values);
             mConnections.Clear();
         }
         finally
@@ -185,16 +208,43 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         await DisposeConnectionsAsync(cachedConnections).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 在连接创建或失效操作释放闸门后继续完成延迟 Dispose，避免调用方被永久阻塞。
+    /// </summary>
+    private async Task CompleteDeferredDisposeAsync()
+    {
+        try
+        {
+            await mConnectionGate.WaitAsync().ConfigureAwait(false);
+            List<FastChannelConnection> cachedConnections;
+            try
+            {
+                cachedConnections = new List<FastChannelConnection>(mConnections.Values);
+                mConnections.Clear();
+            }
+            finally
+            {
+                mConnectionGate.Release();
+            }
+
+            await DisposeConnectionsAsync(cachedConnections).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 生命周期已经进入 Dispose；后台收口失败不能重新传播到已返回的调用方。
+        }
+    }
+
     /// <summary>逐一关闭已移出缓存的连接（同步路径），并在全部尝试完成后汇总释放异常。</summary>
     /// <param name="cachedConnections">当前 Transport 曾拥有的连接快照。</param>
-    private static void DisposeConnections(IReadOnlyList<CachedFastChannelConnection> cachedConnections)
+    private static void DisposeConnections(IReadOnlyList<FastChannelConnection> cachedConnections)
     {
         List<Exception>? failures = null;
         for (var index = 0; index < cachedConnections.Count; index++)
         {
             try
             {
-                cachedConnections[index].Connection.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                cachedConnections[index].DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
             catch (Exception exception)
             {
@@ -211,14 +261,14 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
 
     /// <summary>逐一异步关闭已移出缓存的连接，并在全部尝试完成后汇总释放异常。</summary>
     /// <param name="cachedConnections">当前 Transport 曾拥有的连接快照。</param>
-    private static async ValueTask DisposeConnectionsAsync(IReadOnlyList<CachedFastChannelConnection> cachedConnections)
+    private static async ValueTask DisposeConnectionsAsync(IReadOnlyList<FastChannelConnection> cachedConnections)
     {
         List<Exception>? failures = null;
         for (var index = 0; index < cachedConnections.Count; index++)
         {
             try
             {
-                await cachedConnections[index].Connection.DisposeAsync().ConfigureAwait(false);
+                await cachedConnections[index].DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -254,7 +304,7 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         }
 
         await InvalidateConnectionAsync(engineId, null).ConfigureAwait(false);
-        throw CreateProtocolException(
+        throw FastChannelConnectorUtilities.CreateProtocolException(
             "FastChannelUnavailable",
             "The current engine registry does not publish a compatible FastChannel endpoint.",
             "Use FileBridge fallback, or refresh registry after the engine adapter is ready.");
@@ -267,14 +317,93 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
     /// <returns>可连接 endpoint；没有兼容 endpoint 时返回 null。</returns>
     private FastChannelEndpoint? FindCurrentEndpoint(string engineId)
     {
-        var registry = mFileBridgeTransport.ReadEngineEntries().FirstOrDefault(
-            entry => string.Equals(entry.EngineId, engineId, StringComparison.Ordinal));
+        var registry = ReadRegistryEntryWithCache(engineId);
         if (registry == null)
         {
             return null;
         }
 
         return registry.FastChannels.FirstOrDefault(endpoint => IsCurrentLocalEndpoint(registry, endpoint));
+    }
+
+    /// <summary>
+    /// 读取指定 engine 的 registry 条目，并以 engine.json 的最后写入时间为变化信号复用上轮解析结果；
+    /// 文件被原子替换后 mtime 必然变化，因此不会把已轮换的宿主身份缓存给调用方。
+    /// </summary>
+    /// <param name="engineId">目标 engine。</param>
+    /// <returns>当前 registry 条目；engine 尚未注册时为空。</returns>
+    private EngineRegistryEntry? ReadRegistryEntryWithCache(string engineId)
+    {
+        var registryPath = mFileBridgeTransport.Paths.GetEngineRegistryPath(engineId);
+        DateTime registryMtimeUtc;
+        try
+        {
+            registryMtimeUtc = File.GetLastWriteTimeUtc(registryPath);
+        }
+        catch (IOException)
+        {
+            ClearRegistryCache();
+            return FindEntryById(ReadFreshEntries(), engineId);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            ClearRegistryCache();
+            return FindEntryById(ReadFreshEntries(), engineId);
+        }
+
+        lock (mRegistryCacheGate)
+        {
+            ThrowIfDisposed();
+            if (mRegistryCache.TryGetValue(engineId, out var cached)
+                && cached.RegistryMtimeUtc == registryMtimeUtc)
+            {
+                return cached.Entry;
+            }
+        }
+
+        var entry = FindEntryById(ReadFreshEntries(), engineId);
+        lock (mRegistryCacheGate)
+        {
+            ThrowIfDisposed();
+            mRegistryCache[engineId] = new CachedRegistryEntry(entry, registryMtimeUtc);
+        }
+
+        return entry;
+    }
+
+    /// <summary>读取当前全量 registry；解析失败按既有语义抛出，不回退到可能陈旧的缓存。</summary>
+    /// <returns>当前可用的 registry 条目列表。</returns>
+    private IReadOnlyList<EngineRegistryEntry> ReadFreshEntries()
+    {
+        return mFileBridgeTransport.ReadEngineEntries();
+    }
+
+    /// <summary>按 engine 标识在 registry 列表中查找条目。</summary>
+    /// <param name="entries">本轮读取到的条目。</param>
+    /// <param name="engineId">目标 engine。</param>
+    /// <returns>匹配条目；不存在时为空。</returns>
+    private static EngineRegistryEntry? FindEntryById(
+        IReadOnlyList<EngineRegistryEntry> entries,
+        string engineId)
+    {
+        for (var index = 0; index < entries.Count; index++)
+        {
+            if (string.Equals(entries[index].EngineId, engineId, StringComparison.Ordinal))
+            {
+                return entries[index];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>清空 registry 缓存；调用方在连接失效或生命周期结束时触发，下一轮读取强制回到磁盘事实。</summary>
+    private void ClearRegistryCache()
+    {
+        lock (mRegistryCacheGate)
+        {
+            mRegistryCache.Clear();
+        }
     }
 
     /// <summary>
@@ -314,19 +443,16 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
     /// <param name="responseFrame">连接返回的下一条 frame。</param>
     /// <param name="envelope">本次发送的 command 信封。</param>
     /// <returns>已验证的 FileBridge 风格 terminal response。</returns>
-    private static CommandResponse ReadCommandResponse(FastChannelFrame responseFrame, CommandEnvelope envelope)
+    private static CommandResponse ReadCommandResponse(YokiFrameFastChannelFrame responseFrame, CommandEnvelope envelope)
     {
-        if (responseFrame.Kind == YokiFrameFastChannelMessageKind.Error)
+        if (responseFrame.MessageKind == YokiFrameFastChannelMessageKind.Error)
         {
-            throw CreateProtocolException(
-                "FastChannelHostError",
-                "FastChannel host rejected the read-only command.",
-                "Use FileBridge fallback or refresh the engine registry.");
+            throw CreateHostError(responseFrame.PayloadJson);
         }
 
-        if (responseFrame.Kind != YokiFrameFastChannelMessageKind.Response)
+        if (responseFrame.MessageKind != YokiFrameFastChannelMessageKind.Response)
         {
-            throw CreateProtocolException(
+            throw FastChannelConnectorUtilities.CreateProtocolException(
                 "FastChannelResponseKindMismatch",
                 "FastChannel host returned a non-response frame after a command.",
                 "Discard the connection and use FileBridge fallback.");
@@ -339,7 +465,7 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
         }
         catch (System.Text.Json.JsonException)
         {
-            throw CreateProtocolException(
+            throw FastChannelConnectorUtilities.CreateProtocolException(
                 "FastChannelResponseInvalid",
                 "FastChannel host returned a malformed response JSON payload.",
                 "Discard the connection and use FileBridge fallback.");
@@ -354,36 +480,62 @@ internal sealed partial class FastChannelCommandTransport : IDisposable, IAsyncD
     }
 
     /// <summary>
+    /// 解析 Host Error frame 的稳定错误码；保留 queue/host 生命周期错误的可回退语义，
+    /// 同时避免把真正的协议损坏统一伪装成“通道不可用”。
+    /// </summary>
+    /// <param name="payloadJson">Host 写入 Error frame 的 JSON payload。</param>
+    /// <returns>带 Host 错误码的标准协议异常。</returns>
+    private static YokiFrameProtocolException CreateHostError(string payloadJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("code", out var codeProperty)
+                && codeProperty.ValueKind == JsonValueKind.String)
+            {
+                var code = codeProperty.GetString();
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    var message = document.RootElement.TryGetProperty("message", out var messageProperty)
+                        && messageProperty.ValueKind == JsonValueKind.String
+                        ? messageProperty.GetString()
+                        : "FastChannel host rejected the read-only command.";
+                    return FastChannelConnectorUtilities.CreateProtocolException(
+                        code,
+                        message ?? "FastChannel host rejected the read-only command.",
+                        "Use FileBridge fallback or refresh the engine registry.");
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // 继续使用稳定的通用错误码，让上层把损坏的 Error frame 当作协议错误暴露。
+        }
+
+        return FastChannelConnectorUtilities.CreateProtocolException(
+            "FastChannelHostError",
+            "FastChannel host returned a malformed or unclassified Error frame.",
+            "Discard the connection and inspect the host protocol version.");
+    }
+
+    /// <summary>
     /// 创建携带外部取消令牌的短操作期限，避免 FastChannel 异常时占满 Workbench 的常规 command timeout。
     /// </summary>
-    /// <param name="commandTimeoutMs">已通过 CommandEnvelope 校验的命令超时。</param>
+    /// <param name="operationTimeoutMs">调用方为本次 FastChannel 操作分配的本地期限。</param>
     /// <param name="cancellationToken">调用侧取消令牌。</param>
     /// <returns>用于连接、握手和单次请求响应的链接取消源。</returns>
     private static CancellationTokenSource CreateOperationCancellationSource(
-        int commandTimeoutMs,
+        int operationTimeoutMs,
         CancellationToken cancellationToken)
     {
         var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        source.CancelAfter(Math.Min(commandTimeoutMs, MAX_OPERATION_TIMEOUT_MS));
+        source.CancelAfter(Math.Min(operationTimeoutMs, MAX_OPERATION_TIMEOUT_MS));
         return source;
     }
 
-    /// <summary>
-    /// 创建供 Workbench 和 CLI 统一识别的可回退 FastChannel 协议异常。
-    /// </summary>
-    /// <param name="code">稳定错误码。</param>
-    /// <param name="message">当前失败说明。</param>
-    /// <param name="suggestion">恢复或回退建议。</param>
-    /// <returns>标准协议异常。</returns>
-    private static YokiFrameProtocolException CreateProtocolException(string code, string message, string suggestion)
-    {
-        return new YokiFrameProtocolException(new YokiFrameError(code, message, suggestion));
-    }
-
-    /// <summary>
-    /// 保存连接创建时的完整 endpoint 身份，供下一次 registry 刷新判断是否仍可安全复用。
-    /// </summary>
-    /// <param name="Endpoint">连接创建时验证过的 endpoint。</param>
-    /// <param name="Connection">已经完成 Hello/HelloAck 的 transport 连接。</param>
-    private sealed record CachedFastChannelConnection(FastChannelEndpoint Endpoint, FastChannelConnection Connection);
+    /// <summary>保存单 engine 的 registry 解析结果与触发解析的 engine.json 最后写入时间。</summary>
+    /// <param name="Entry">解析出的 registry 条目；engine 未注册时为空。</param>
+    /// <param name="RegistryMtimeUtc">触发本轮解析的 engine.json 最后写入 UTC 时间。</param>
+    private sealed record CachedRegistryEntry(EngineRegistryEntry? Entry, DateTime RegistryMtimeUtc);
 }

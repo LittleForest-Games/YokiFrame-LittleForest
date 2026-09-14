@@ -193,6 +193,7 @@ public sealed partial class WorkbenchShellViewTests
         Assert.True(maximizeIndex < closeIndex);
         Assert.Contains("Classes=\"runtime-update-progress\"", titleBarXaml);
         Assert.Contains("RuntimeUpdate.IsBuilding", titleBarXaml);
+        Assert.Contains("MinWidth=\"0\"", titleBarXaml);
         Assert.DoesNotContain("RuntimeUpdate.StatusText", shellXaml);
         Assert.DoesNotContain("RuntimeUpdate.RebuildCommand", shellXaml);
     }
@@ -308,13 +309,13 @@ public sealed partial class WorkbenchShellViewTests
     }
 
     /// <summary>
-    /// 验证 Workbench 关闭时无条件保存 TableKit 草稿，且保存发生在窗口布局状态之前。
+    /// 验证 Workbench 关闭时保存编辑器草稿，且保存发生在窗口布局状态之前。
     /// </summary>
     [Fact]
     public void WorkbenchWindowPersistsTableKitConfigurationBeforeClose()
     {
         var source = ReadWorkbenchWindowSource();
-        var closingStart = source.IndexOf("private void OnClosing", StringComparison.Ordinal);
+        var closingStart = source.IndexOf("private async void OnClosing", StringComparison.Ordinal);
         var closedStart = source.IndexOf("private void OnClosed", StringComparison.Ordinal);
         var closingBody = source[closingStart..closedStart];
         const string persistCall = "mShellViewModel.TableKitPage.TryPersistConfiguration();";
@@ -323,6 +324,32 @@ public sealed partial class WorkbenchShellViewTests
         Assert.DoesNotContain("if (mWindowStateStore != null) " + persistCall, closingBody);
         Assert.True(
             closingBody.IndexOf(persistCall, StringComparison.Ordinal)
+            < closingBody.IndexOf("SaveWindowState();", StringComparison.Ordinal));
+    }
+
+    /// <summary>验证 Workbench 关闭时提交各编辑器页面的未执行操作草稿。</summary>
+    [Fact]
+    public void WorkbenchWindowPersistsEditorDraftsBeforeClose()
+    {
+        var source = ReadWorkbenchWindowSource();
+        var closingStart = source.IndexOf("private async void OnClosing", StringComparison.Ordinal);
+        var closedStart = source.IndexOf("private void OnClosed", StringComparison.Ordinal);
+        var closingBody = source[closingStart..closedStart];
+
+        Assert.Contains("eventArgs.Cancel = true;", closingBody);
+        Assert.Contains("Task.Run", closingBody);
+        Assert.Contains("mClosePersistenceCompleted", closingBody);
+        Assert.Contains("await mShellViewModel.UIKitPage.PersistEditorSettingsOnCloseAsync();", closingBody);
+        Assert.Contains("mShellViewModel.LocalizationKitPage.PersistLubanWorkspaceSettingsOnClose();", closingBody);
+        Assert.Contains("await mShellViewModel.AudioKitPage.PersistIndexSettingsOnCloseAsync();", closingBody);
+        Assert.True(
+            closingBody.IndexOf("PersistEditorSettingsOnClose", StringComparison.Ordinal)
+            < closingBody.IndexOf("SaveWindowState();", StringComparison.Ordinal));
+        Assert.True(
+            closingBody.IndexOf("PersistLubanWorkspaceSettingsOnClose", StringComparison.Ordinal)
+            < closingBody.IndexOf("SaveWindowState();", StringComparison.Ordinal));
+        Assert.True(
+            closingBody.IndexOf("PersistIndexSettingsOnClose", StringComparison.Ordinal)
             < closingBody.IndexOf("SaveWindowState();", StringComparison.Ordinal));
     }
 
@@ -450,12 +477,11 @@ public sealed partial class WorkbenchShellViewTests
         Assert.InRange(viewModel.EngineCards.Count, 1, 4);
         Assert.NotEmpty(viewModel.SnapshotCards);
         Assert.NotEmpty(viewModel.SkillOptions);
-        Assert.Equal(
-            new[] { "yokiframe", "yokiframe-cli", "yokiframe-workbench" },
-            viewModel.SkillOptions.Select(static option => option.Name));
-        Assert.Contains(viewModel.SkillOptions, static option => option.Name == "yokiframe-cli" && option.Label == "CLI 指南");
-        Assert.Contains(viewModel.SkillOptions, static option => option.Name == "yokiframe-workbench" && option.Label == "工作台指南");
-        Assert.DoesNotContain(viewModel.SkillOptions, static option => option.Name is "yokiframe-command-bridge" or "yokiframe-editor");
+        Assert.Equal(new[] { "yokiframe" }, viewModel.SkillOptions.Select(static option => option.Name));
+        Assert.Contains(viewModel.SkillOptions, static option => option.Name == "yokiframe" && option.Label == "使用指南");
+        Assert.DoesNotContain(
+            viewModel.SkillOptions,
+            static option => option.Name is "yokiframe-cli" or "yokiframe-workbench" or "yokiframe-command-bridge" or "yokiframe-editor");
         Assert.NotEmpty(viewModel.SkillStatusCards);
         Assert.NotEmpty(viewModel.SkillTargets);
         Assert.NotEmpty(viewModel.LogLines);
@@ -505,11 +531,11 @@ public sealed partial class WorkbenchShellViewTests
     {
         var xaml = ReadWorkbenchShellViewXaml();
 
-        Assert.Contains("Content=\"Ping\"", xaml);
+        Assert.True(xaml.Contains("Content=\"Ping\"") || xaml.Contains("String.Overview.Ping"));
         Assert.Contains("Command=\"{CompiledBinding PingCommand}\"", xaml);
-        Assert.Contains("Content=\"状态\"", xaml);
+        Assert.True(xaml.Contains("Content=\"状态\"") || xaml.Contains("String.Overview.Status"));
         Assert.Contains("Command=\"{CompiledBinding BridgeStatusCommand}\"", xaml);
-        Assert.Contains("Content=\"目录\"", xaml);
+        Assert.True(xaml.Contains("Content=\"目录\"") || xaml.Contains("String.Overview.Catalog"));
         Assert.Contains("Command=\"{CompiledBinding RefreshCommandCatalogCommand}\"", xaml);
         Assert.DoesNotContain("Content=\"发送\"", xaml);
     }

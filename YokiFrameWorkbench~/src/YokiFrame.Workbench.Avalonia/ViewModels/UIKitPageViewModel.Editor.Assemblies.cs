@@ -10,7 +10,23 @@ public sealed partial class UIKitPageViewModel
     /// <summary>获取 Unity Editor 当前可供生成代码选择的程序集名称。</summary>
     public IReadOnlyList<string> AssemblyNames => mAssemblyNames;
 
-    /// <summary>应用 Unity Editor 扫描到的程序集，并让失效的已保存值回退到默认程序集。</summary>
+    /// <summary>将配置中的程序集补入 ComboBox 候选，确保 TwoWay 绑定不会把恢复值清空。</summary>
+    /// <param name="assemblyName">待加入的程序集名称。</param>
+    private void EnsureAssemblyOption(string assemblyName)
+    {
+        string normalizedAssemblyName = assemblyName?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedAssemblyName)
+            || ContainsAssemblyName(mAssemblyNames, normalizedAssemblyName)) return;
+
+        List<string> names = new(mAssemblyNames) { normalizedAssemblyName };
+        names.Sort(CompareAssemblyNames);
+        mAssemblyNames = names.ToArray();
+        OnPropertyChanged(nameof(AssemblyNames));
+    }
+
+    /// <summary>
+    /// 应用 Unity Editor 扫描到的程序集，并保留当前配置值，避免 context 暂时漏报时覆盖已保存选择。
+    /// </summary>
     /// <param name="assemblyNames">Unity Editor 返回的可用程序集列表。</param>
     private void ApplyAssemblyOptions(IReadOnlyList<string> assemblyNames)
     {
@@ -26,10 +42,18 @@ public sealed partial class UIKitPageViewModel
             }
         }
 
+        // Unity 在重新编译或刚启动时可能暂时只返回默认程序集；当前配置仍是有效的用户意图，必须留在候选项中。
+        string configuredAssemblyName = AssemblyName?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(configuredAssemblyName)
+            && !ContainsAssemblyName(names, configuredAssemblyName))
+        {
+            names.Add(configuredAssemblyName);
+        }
+
         names.Sort(CompareAssemblyNames);
         mAssemblyNames = names.ToArray();
         OnPropertyChanged(nameof(AssemblyNames));
-        if (!ContainsAssemblyName(mAssemblyNames, AssemblyName))
+        if (string.IsNullOrWhiteSpace(AssemblyName))
             AssemblyName = DEFAULT_ASSEMBLY_NAME;
     }
 

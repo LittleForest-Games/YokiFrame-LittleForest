@@ -7,7 +7,7 @@ namespace YokiFrame
     /// <summary>
     /// 解析并约束 `godot-editor` FileBridge 的全部项目内路径。
     /// </summary>
-    internal sealed class GodotEditorFileBridgePaths
+    internal sealed class GodotEditorFileBridgePaths : IYokiFrameFileBridgeEnginePaths
     {
         /// <summary>
         /// 创建路径集合，并把协议路径限制在目标 Godot 项目根内。
@@ -31,6 +31,7 @@ namespace YokiFrame
                 YokiFrameFileBridgeLayout.ENGINES_DIRECTORY,
                 GodotEditorFileBridgeHost.ENGINE_ID);
             CommandsRoot = CombineInsideEngine(YokiFrameFileBridgeLayout.COMMANDS_DIRECTORY);
+            ProcessingRoot = Path.Combine(CommandsRoot, YokiFrameFileBridgeLayout.PROCESSING_DIRECTORY);
             ArchiveRoot = Path.Combine(CommandsRoot, YokiFrameFileBridgeLayout.ARCHIVE_DIRECTORY);
             DeadletterRoot = Path.Combine(CommandsRoot, YokiFrameFileBridgeLayout.DEADLETTER_DIRECTORY);
             ResultsRoot = CombineInsideEngine(YokiFrameFileBridgeLayout.RESULTS_DIRECTORY);
@@ -49,6 +50,9 @@ namespace YokiFrame
         /// <summary>获取待处理命令目录。</summary>
         public string CommandsRoot { get; }
 
+        /// <summary>获取跨进程 command claim 目录。</summary>
+        public string ProcessingRoot { get; }
+
         /// <summary>获取成功命令归档目录。</summary>
         public string ArchiveRoot { get; }
 
@@ -64,6 +68,9 @@ namespace YokiFrame
         /// <summary>获取 heartbeat 路径。</summary>
         public string HeartbeatPath { get; }
 
+        /// <summary>获取同一项目和 godot-editor Host 的 admission 锁路径。</summary>
+        public string AdmissionLockPath => Path.Combine(EngineRoot, "host.lock");
+
         /// <summary>
         /// 创建状态发布和命令消费需要的固定协议目录。
         /// </summary>
@@ -71,10 +78,19 @@ namespace YokiFrame
         {
             EnsureProtocolPathsAreSafe();
             Directory.CreateDirectory(CommandsRoot);
+            Directory.CreateDirectory(ProcessingRoot);
             Directory.CreateDirectory(ArchiveRoot);
             Directory.CreateDirectory(DeadletterRoot);
             Directory.CreateDirectory(ResultsRoot);
             Directory.CreateDirectory(Path.GetDirectoryName(HeartbeatPath));
+        }
+
+        /// <summary>
+        /// 在每轮命令处理前复核固定协议路径，防止 Host 启动后目录被替换为重解析点。
+        /// </summary>
+        public void EnsureReady()
+        {
+            EnsureProtocolPathsAreSafe();
         }
 
         /// <summary>
@@ -150,45 +166,22 @@ namespace YokiFrame
                 throw new IOException("Godot Editor FileBridge path escaped the project root.");
             }
 
-            EnsureNoReparsePoint(ProjectRoot, fullPath);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, fullPath);
             return fullPath;
         }
 
         /// <summary>重新校验全部固定协议路径，阻断 Host 创建后被替换的目录链接。</summary>
         private void EnsureProtocolPathsAreSafe()
         {
-            EnsureNoReparsePoint(ProjectRoot, EngineRoot);
-            EnsureNoReparsePoint(ProjectRoot, CommandsRoot);
-            EnsureNoReparsePoint(ProjectRoot, ArchiveRoot);
-            EnsureNoReparsePoint(ProjectRoot, DeadletterRoot);
-            EnsureNoReparsePoint(ProjectRoot, ResultsRoot);
-            EnsureNoReparsePoint(ProjectRoot, RegistryPath);
-            EnsureNoReparsePoint(ProjectRoot, HeartbeatPath);
-        }
-
-        /// <summary>拒绝项目根到候选路径的现存组件包含符号链接、Junction 或其它重解析点。</summary>
-        private static void EnsureNoReparsePoint(string root, string path)
-        {
-            var current = root;
-            EnsurePathComponentIsNotReparsePoint(current);
-            var relativePath = Path.GetRelativePath(root, path);
-            foreach (var segment in relativePath.Split(
-                         new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
-                         StringSplitOptions.RemoveEmptyEntries))
-            {
-                current = Path.Combine(current, segment);
-                EnsurePathComponentIsNotReparsePoint(current);
-            }
-        }
-
-        /// <summary>校验单个现存文件系统组件不是重解析点。</summary>
-        private static void EnsurePathComponentIsNotReparsePoint(string path)
-        {
-            if ((File.Exists(path) || Directory.Exists(path))
-                && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            {
-                throw new IOException("Godot Editor FileBridge path contains a symbolic link or junction: " + path);
-            }
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, EngineRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, CommandsRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, ProcessingRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, ArchiveRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, DeadletterRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, ResultsRoot);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, RegistryPath);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, HeartbeatPath);
+            YokiFrameFilePathPolicy.EnsureNoReparsePoint(ProjectRoot, AdmissionLockPath);
         }
 
         /// <summary>

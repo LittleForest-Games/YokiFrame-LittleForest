@@ -37,9 +37,9 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
         Assert.Contains("CurrentPageTitle", xaml);
         Assert.Contains("Classes=\"page-header\"", xaml);
         Assert.Contains("CurrentPageDescription", xaml);
-        Assert.Contains("运行状态", xaml);
-        Assert.Contains("命令桥", xaml);
-        Assert.Contains("安装 Skill", xaml);
+        Assert.True(xaml.Contains("运行状态") || xaml.Contains("String.Overview.RuntimeStatus"));
+        Assert.True(xaml.Contains("命令桥") || xaml.Contains("String.Overview.CommandBridge"));
+        Assert.True(xaml.Contains("安装 Skill") || xaml.Contains("String.Overview.SkillsTitle"));
         Assert.Contains("components:LogConsole", xaml);
         Assert.Contains("SummaryCards", xaml);
         Assert.Contains("EngineCards", xaml);
@@ -99,10 +99,10 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
     {
         var xaml = ReadWorkbenchShellViewXaml();
 
-        Assert.Contains("Text=\"命令桥\"", xaml);
-        Assert.Contains("Content=\"Ping\"", xaml);
-        Assert.Contains("Content=\"状态\"", xaml);
-        Assert.Contains("Content=\"目录\"", xaml);
+        Assert.True(xaml.Contains("Text=\"命令桥\"") || xaml.Contains("String.Overview.CommandBridge"));
+        Assert.True(xaml.Contains("Content=\"Ping\"") || xaml.Contains("String.Overview.Ping"));
+        Assert.True(xaml.Contains("Content=\"状态\"") || xaml.Contains("String.Overview.Status"));
+        Assert.True(xaml.Contains("Content=\"目录\"") || xaml.Contains("String.Overview.Catalog"));
         Assert.Contains("PingCommand", xaml);
         Assert.Contains("BridgeStatusCommand", xaml);
         Assert.Contains("RefreshCommandCatalogCommand", xaml);
@@ -119,7 +119,7 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
     {
         var xaml = ReadWorkbenchShellViewXaml();
 
-        Assert.Contains("Text=\"字体\"", xaml);
+        Assert.True(xaml.Contains("Text=\"字体\"") || xaml.Contains("String.Overview.FontLabel"));
         Assert.Contains("DisplayFontOptions", xaml);
         Assert.Contains("SelectedDisplayFontName", xaml);
         Assert.Contains("SelectedDisplayFontFamily", xaml);
@@ -196,6 +196,8 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
         Assert.Contains("SelectCommand", xaml);
         Assert.Contains("InstallCommand", xaml);
         Assert.Contains("UninstallCommand", xaml);
+        Assert.Contains("CompiledBinding ActionText", xaml);
+        Assert.Contains("CompiledBinding CustomSkillActionText", xaml);
         Assert.DoesNotContain("RefreshSkillStatusCommand", xaml);
         Assert.Contains("SkillInstallStatusText", xaml);
         Assert.Contains("SkillStatusCards", xaml);
@@ -215,6 +217,7 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
         Assert.Contains("Classes=\"card skill-target-row\"", xaml);
         Assert.Contains("Classes.neutral=\"{CompiledBinding !IsInstalled}\"", xaml);
         Assert.Contains("CustomSkillPath", xaml);
+        Assert.Contains("TextAlignment=\"Center\"", xaml);
         Assert.Contains("InstallCustomSkillCommand", xaml);
         Assert.Contains("UninstallCustomSkillCommand", xaml);
         Assert.DoesNotContain("WrapPanel", xaml);
@@ -235,6 +238,35 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
         InvokeCommandProperty(viewModel, "InstallCustomSkillCommand");
 
         Assert.True(File.Exists(Path.Combine(projectRoot, "custom", "skills", "yokiframe", "SKILL.md")));
+    }
+
+    /// <summary>
+    /// 验证已安装目标把按钮文案切成更新，并且再次安装会整目录替换旧文档。
+    /// </summary>
+    [Fact]
+    public void FrameworkOverviewUpdatesInstalledSkillByReplacingDirectory()
+    {
+        var projectRoot = CreateProjectWithPackagedSkill("yokiframe");
+        var targetRoot = Path.Combine(projectRoot, ".codex", "skills", "yokiframe");
+        Directory.CreateDirectory(targetRoot);
+        File.WriteAllText(Path.Combine(targetRoot, "SKILL.md"), "old");
+        File.WriteAllText(Path.Combine(targetRoot, "stale.md"), "stale");
+        File.WriteAllText(
+            Path.Combine(projectRoot, "Assets", "YokiFrame", "Core", "Editor", "Skills", "yokiframe", "SKILL.md"),
+            "new-content");
+        var viewModel = new WorkbenchShellViewModel(() => { }, _ => { }, _ => Task.CompletedTask);
+
+        viewModel.UpdateDashboard(CreateDashboardState(projectRoot));
+        var codex = Assert.Single(viewModel.SkillTargets, target => target.Id == "codex");
+        Assert.True(codex.IsInstalled);
+        Assert.True(codex.ActionText == "更新" || codex.ActionText == "Update");
+        Assert.True(codex.InstallCommand.CanExecute(null));
+        codex.InstallCommand.Execute(null);
+
+        Assert.Equal("new-content", File.ReadAllText(Path.Combine(targetRoot, "SKILL.md")));
+        Assert.False(File.Exists(Path.Combine(targetRoot, "stale.md")));
+        var updated = Assert.Single(viewModel.SkillTargets, target => target.Id == "codex");
+        Assert.True(updated.ActionText == "更新" || updated.ActionText == "Update");
     }
 
     /// <summary>
@@ -265,10 +297,10 @@ public sealed partial class WorkbenchShellOverviewLayoutTests
         viewModel.UpdateDashboard(CreateDashboardState());
 
         Assert.InRange(viewModel.EngineCards.Count, 1, 4);
-        Assert.Contains(viewModel.EngineCards, card => card.Title == "心跳");
-        Assert.Contains(viewModel.EngineCards, card => card.Title == "命令");
-        Assert.Contains(viewModel.EngineCards, card => card.Title == "事件");
-        Assert.Contains(viewModel.EngineCards, card => card.Title == "背压");
+        Assert.Contains(viewModel.EngineCards, card => card.Title == "心跳" || card.Title == "Heartbeat");
+        Assert.Contains(viewModel.EngineCards, card => card.Title == "命令" || card.Title == "Command");
+        Assert.Contains(viewModel.EngineCards, card => card.Title == "事件" || card.Title == "Events");
+        Assert.Contains(viewModel.EngineCards, card => card.Title == "背压" || card.Title == "Pressure");
         Assert.DoesNotContain(viewModel.EngineCards, card => card.Value.Contains("F:/Project", StringComparison.Ordinal));
         Assert.DoesNotContain(viewModel.EngineCards, card => card.Detail.Contains("F:/Project", StringComparison.Ordinal));
     }

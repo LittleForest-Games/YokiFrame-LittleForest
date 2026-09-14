@@ -4,7 +4,9 @@ using System.Globalization;
 namespace YokiFrame
 {
     /// <summary>
-    /// 定义 Kit 运行时设置存储，宿主可注入持久化实现，Core 默认使用内存存储。
+    /// 定义 Kit 运行时设置的内存读写契约。
+    /// 宿主 Adapter 把 JSON 或 ProjectSettings 填进实现后再交给 <see cref="KitSettings"/>；
+    /// 本接口不表达文件路径、宿主 SDK 或持久化格式。
     /// </summary>
     public interface IKitSettingsStore
     {
@@ -41,9 +43,12 @@ namespace YokiFrame
         private static readonly object sLock = new object();
         private static readonly YokiFrameRuntimeSettingsStore sMemoryStore = new();
         private static Func<IKitSettingsStore> sDefaultStoreFactory;
-        private static IKitSettingsStore sStore;
-        private static bool sHasExplicitStore;
-        private static bool sUsingMemoryFallback;
+        // 显式注入的宿主 Store；非空时始终优先于工厂与内存回退。
+        private static IKitSettingsStore sExplicitStore;
+        // 惰性解析结果：保存工厂创建的 Store 或被钉住的内存回退 Store。
+        private static IKitSettingsStore sResolvedStore;
+        // 标识当前解析结果是“内存回退且等待工厂注册后重解析”；避免用两个布尔编码同一三态。
+        private static bool sPinnedToMemoryFallback;
 
         /// <summary>
         /// 注册当前宿主的默认设置 Store 工厂；只记录工厂，首次设置访问时才创建 Store。
@@ -60,25 +65,28 @@ namespace YokiFrame
             lock (sLock)
             {
                 sDefaultStoreFactory = factory;
-                if (!sHasExplicitStore && sUsingMemoryFallback)
-                {
-                    sStore = null;
-                    sUsingMemoryFallback = false;
-                }
+                // 若此前钉在内存回退上，则下一次访问按新工厂重新解析；显式 Store 与工厂结果不受影响。
             }
         }
 
         /// <summary>
-        /// 注入宿主设置存储；传入 null 时恢复到内存存储。
+        /// 注入已经填充好的设置存储。传入 null 会清除显式存储；
+        /// 下一次访问重新解析已注册工厂，没有工厂时才回退到内置内存存储。
         /// </summary>
-        /// <param name="store">宿主设置存储。</param>
+        /// <param name="store">已填充的设置存储；null 表示放弃显式存储。</param>
         public static void SetStore(IKitSettingsStore store)
         {
             lock (sLock)
             {
-                sStore = store ?? sMemoryStore;
-                sHasExplicitStore = store != null;
-                sUsingMemoryFallback = store == null;
+                if (store != null)
+                {
+                    sExplicitStore = store;
+                    return;
+                }
+
+                sExplicitStore = null;
+                sResolvedStore = sMemoryStore;
+                sPinnedToMemoryFallback = true;
             }
         }
 
@@ -91,9 +99,9 @@ namespace YokiFrame
             {
                 sMemoryStore.Clear();
                 sDefaultStoreFactory = null;
-                sStore = null;
-                sHasExplicitStore = false;
-                sUsingMemoryFallback = false;
+                sExplicitStore = null;
+                sResolvedStore = null;
+                sPinnedToMemoryFallback = false;
             }
         }
 
@@ -216,31 +224,38 @@ namespace YokiFrame
         }
 
         /// <summary>
-        /// 在锁内解析当前有效 Store；宿主工厂只调用一次，未注册宿主时使用 Core 内存实现。
+        /// 在锁内解析当前有效 Store：显式 Store 优先；否则复用已解析结果。
+        /// 若当前仍钉在内存回退且此后已注册工厂，则按新工厂重新解析一次。
         /// </summary>
         /// <returns>当前会话唯一的设置 Store。</returns>
         private static IKitSettingsStore GetStoreLocked()
         {
-            if (sStore != null)
+            if (sExplicitStore != null)
             {
-                return sStore;
+                return sExplicitStore;
             }
 
-            if (sDefaultStoreFactory == null)
+            // 钉在内存回退且此后注册了工厂时，按新工厂重新解析一次。
+            if (sResolvedStore == null || (sPinnedToMemoryFallback && sDefaultStoreFactory != null))
             {
-                sStore = sMemoryStore;
-                sUsingMemoryFallback = true;
-                return sStore;
+                if (sDefaultStoreFactory != null)
+                {
+                    sResolvedStore = sDefaultStoreFactory();
+                    if (sResolvedStore == null)
+                    {
+                        throw new InvalidOperationException("The default Kit settings Store factory returned null.");
+                    }
+
+                    sPinnedToMemoryFallback = false;
+                }
+                else
+                {
+                    sResolvedStore = sMemoryStore;
+                    sPinnedToMemoryFallback = true;
+                }
             }
 
-            sStore = sDefaultStoreFactory();
-            if (sStore == null)
-            {
-                throw new InvalidOperationException("The default Kit settings Store factory returned null.");
-            }
-
-            sUsingMemoryFallback = false;
-            return sStore;
+            return sResolvedStore;
         }
 
         /// <summary>

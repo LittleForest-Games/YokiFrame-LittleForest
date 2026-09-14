@@ -25,11 +25,11 @@ internal sealed partial class FastChannelCommandTransport
             {
                 if (EndpointsMatch(cached.Endpoint, endpoint))
                 {
-                    return cached.Connection;
+                    return cached;
                 }
 
                 mConnections.Remove(endpoint.EngineId);
-                await cached.Connection.DisposeAsync().ConfigureAwait(false);
+                await cached.DisposeAsync().ConfigureAwait(false);
             }
 
             return await ConnectCurrentEndpointAsync(endpoint, cancellationToken).ConfigureAwait(false);
@@ -55,14 +55,14 @@ internal sealed partial class FastChannelCommandTransport
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw CreateProtocolException(
+                throw FastChannelConnectorUtilities.CreateProtocolException(
                     "FastChannelEndpointSuperseded",
                     "FastChannel endpoint changed while the previous connection was handshaking.",
                     "Retry against the latest registry endpoint or use FileBridge fallback.");
             }
 
             EnsureEndpointIsCurrent(endpoint);
-            mConnections.Add(endpoint.EngineId, new CachedFastChannelConnection(endpoint, connection));
+            mConnections.Add(endpoint.EngineId, connection);
             var cachedConnection = connection;
             connection = null;
             return cachedConnection;
@@ -86,7 +86,7 @@ internal sealed partial class FastChannelCommandTransport
             ThrowIfDisposed();
             if (current == null || !EndpointsMatch(current, endpoint))
             {
-                throw CreateProtocolException(
+                throw FastChannelConnectorUtilities.CreateProtocolException(
                     "FastChannelEndpointSuperseded",
                     "FastChannel endpoint changed before the connection could become current.",
                     "Retry against the latest registry endpoint or use FileBridge fallback.");
@@ -112,7 +112,7 @@ internal sealed partial class FastChannelCommandTransport
             ThrowIfDisposed();
             if (current == null || !EndpointsMatch(current, endpoint))
             {
-                throw CreateProtocolException(
+                throw FastChannelConnectorUtilities.CreateProtocolException(
                     "FastChannelEndpointSuperseded",
                     "FastChannel endpoint changed before the connection could become current.",
                     "Retry against the latest registry endpoint or use FileBridge fallback.");
@@ -158,7 +158,7 @@ internal sealed partial class FastChannelCommandTransport
             return;
         }
 
-        throw CreateProtocolException(
+        throw FastChannelConnectorUtilities.CreateProtocolException(
             "FastChannelEndpointSuperseded",
             "FastChannel endpoint changed before the connection could become current.",
             "Retry against the latest registry endpoint or use FileBridge fallback.");
@@ -167,17 +167,19 @@ internal sealed partial class FastChannelCommandTransport
     /// <summary>只释放仍指向失败连接的缓存项，避免旧失败路径关闭新 endpoint。</summary>
     private async Task InvalidateConnectionAsync(string engineId, FastChannelConnection? expectedConnection)
     {
+        // 连接失效意味着 endpoint 身份已被证伪；同步清空 registry 缓存，下一轮读取回到磁盘事实。
+        ClearRegistryCache();
         await mConnectionGate.WaitAsync().ConfigureAwait(false);
         try
         {
             if (!mConnections.TryGetValue(engineId, out var cached)
-                || (expectedConnection != null && !ReferenceEquals(cached.Connection, expectedConnection)))
+                || (expectedConnection != null && !ReferenceEquals(cached, expectedConnection)))
             {
                 return;
             }
 
             mConnections.Remove(engineId);
-            await cached.Connection.DisposeAsync().ConfigureAwait(false);
+            await cached.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
