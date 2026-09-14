@@ -3,7 +3,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Styling;
 using YokiFrame.Workbench.Avalonia.Diagnostics;
-using YokiFrame.Tooling.Application.Services;
+using YokiFrame.Workbench.Avalonia.Services;
 
 namespace YokiFrame.Workbench.Avalonia;
 
@@ -27,6 +27,8 @@ public sealed partial class WorkbenchApp : Application
         {
             AvaloniaXamlLoader.Load(this);
             RequestedThemeVariant = DefaultThemeVariant;
+            // 字符串表在 C# 中，必须在 XAML 载入后注入，否则首帧 DynamicResource 解析不到键。
+            WorkbenchI18nService.Instance.ApplyCurrentCulture();
         }
         finally
         {
@@ -50,12 +52,9 @@ public sealed partial class WorkbenchApp : Application
                         Directory.GetCurrentDirectory(),
                         AppContext.BaseDirectory);
                 desktop.ShutdownMode = global::Avalonia.Controls.ShutdownMode.OnMainWindowClose;
-                desktop.MainWindow = options.Mode == ToolStartupMode.Workbench
-                    ? new WorkbenchWindow(
-                        new WorkbenchDashboardService(options.ProjectRoot),
-                        options,
-                        Program.ActivationCoordinator)
-                    : new InstallerWindow(options);
+                desktop.MainWindow = new WorkbenchCompositionRoot().CreateMainWindow(
+                    options,
+                    Program.ActivationCoordinator);
             }
 
             base.OnFrameworkInitializationCompleted();

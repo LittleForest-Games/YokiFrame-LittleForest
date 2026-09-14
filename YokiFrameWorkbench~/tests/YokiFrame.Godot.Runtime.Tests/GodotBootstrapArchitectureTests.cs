@@ -44,7 +44,8 @@ public sealed class GodotBootstrapArchitectureTests
             "YokiFrameUpdateDispatcher.Tick(scaledDeltaTime, unscaledDeltaTime);",
             source,
             StringComparison.Ordinal);
-        Assert.Contains("mFileBridgeHost.ProcessPendingFastChannelRequests();", source, StringComparison.Ordinal);
+        Assert.Contains("ProcessFastChannelRequestsSafely(mFileBridgeHost);", source, StringComparison.Ordinal);
+        Assert.Contains("host.ProcessPendingFastChannelRequests();", source, StringComparison.Ordinal);
         var processStart = source.IndexOf("public override void _Process(double delta)", StringComparison.Ordinal);
         var dispatchIndex = source.IndexOf("YokiFrameUpdateDispatcher.Tick", processStart, StringComparison.Ordinal);
         var hostGuardIndex = source.IndexOf("if (mFileBridgeHost == null)", processStart, StringComparison.Ordinal);
@@ -91,7 +92,11 @@ public sealed class GodotBootstrapArchitectureTests
         Assert.Contains("RefreshChangedSnapshots()", hostSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshChangedFallbackSnapshots", hostSource, StringComparison.Ordinal);
         Assert.Contains("IYokiFrameSnapshotVersionedKitInteractionProvider", telemetrySource, StringComparison.Ordinal);
-        Assert.Contains("provider is IYokiFrameVersionedKitInteractionProvider", telemetrySource, StringComparison.Ordinal);
+        // 快照/遥测 Provider 的区分判定已下沉到共享版本簿；宿主增量快照必须经它过滤，
+        // 版本化 Provider 判定本身保留在 tracker 源码中，防止 snapshot-only 被提升为 Telemetry。
+        Assert.Contains("mStateVersions.ShouldWriteSnapshot(", telemetrySource, StringComparison.Ordinal);
+        string trackerSource = ReadPackageSource("Core/Editor/CommandBridge/Publishing/YokiFrameKitStateVersionTracker.cs");
+        Assert.Contains("provider is IYokiFrameVersionedKitInteractionProvider", trackerSource, StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -42,32 +42,13 @@ namespace YokiFrame
         }
 
         /// <summary>
-        /// 使用同目录临时文件、落盘 flush 和原子重命名提交 JSON。
+        /// 使用共享原子写提交 JSON；临时文件、flush 与替换语义由 YokiFrameAtomicFileWriter 单源维护。
         /// </summary>
         /// <param name="targetPath">正式目标路径。</param>
         /// <param name="json">完整 JSON 文本。</param>
         public static void WriteAtomic(string targetPath, string json)
         {
-            var directoryPath = Path.GetDirectoryName(targetPath);
-            if (string.IsNullOrEmpty(directoryPath))
-            {
-                throw new DirectoryNotFoundException("Godot FileBridge target path has no directory.");
-            }
-
-            Directory.CreateDirectory(directoryPath);
-            var temporaryPath = targetPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            try
-            {
-                WriteTemporaryFile(temporaryPath, json);
-                File.Move(temporaryPath, targetPath, true);
-            }
-            finally
-            {
-                if (File.Exists(temporaryPath))
-                {
-                    File.Delete(temporaryPath);
-                }
-            }
+            YokiFrameAtomicFileWriter.WriteAllText(targetPath, json);
         }
 
         /// <summary>
@@ -110,15 +91,6 @@ namespace YokiFrame
         }
 
         /// <summary>
-        /// 验证 payloadJson 是合法 JSON，避免 handler 接收语法损坏的字符串。
-        /// </summary>
-        /// <param name="payloadJson">待验证 payload JSON。</param>
-        public static void ValidatePayloadJson(string payloadJson)
-        {
-            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(payloadJson) ? "{}" : payloadJson);
-        }
-
-        /// <summary>
         /// 创建 camelCase、大小写不敏感且不输出多余空白的 JSON 配置。
         /// </summary>
         /// <returns>序列化配置。</returns>
@@ -150,25 +122,6 @@ namespace YokiFrame
             }
         }
 
-        /// <summary>
-        /// 以无 BOM UTF-8 和 WriteThrough 写入临时文件，并在重命名前强制落盘。
-        /// </summary>
-        /// <param name="temporaryPath">临时文件路径。</param>
-        /// <param name="json">完整 JSON 文本。</param>
-        private static void WriteTemporaryFile(string temporaryPath, string json)
-        {
-            using FileStream stream = new FileStream(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                4096,
-                FileOptions.WriteThrough);
-            using StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false));
-            writer.Write(json);
-            writer.Flush();
-            stream.Flush(true);
-        }
     }
 }
 #endif

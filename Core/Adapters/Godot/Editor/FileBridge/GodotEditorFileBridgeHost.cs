@@ -23,13 +23,15 @@ namespace YokiFrame
 
         private readonly string mEngineVersion;
         private readonly GodotEditorFileBridgePaths mPaths;
+        private YokiFrameHostAdmissionLease mAdmissionLease;
         private readonly YokiFrameCommandDispatcher mDispatcher;
-        private bool mIsProcessingCommands;
+        private readonly YokiFrameHostCommandCoordinator mCommandCoordinator;
         private string mLastError = string.Empty;
         private string mSessionId = string.Empty;
         private string mStartedAtUtc = string.Empty;
         private long mGeneration;
         private long mSequence;
+        private DateTime mNextStorageCleanupUtc;
 
         /// <summary>
         /// 创建绑定指定 Godot 项目的 Editor Host，不访问 Runtime Kit 状态。
@@ -46,6 +48,19 @@ namespace YokiFrame
             mEngineVersion = engineVersion;
             mPaths = new GodotEditorFileBridgePaths(projectRoot);
             mDispatcher = CreateCommandDispatcher();
+            // 共享命令存储承载三宿主一致的枚举、认领、终态与 deadletter 移动逻辑；
+            // Editor 宿主保持 OrdinalIgnoreCase 稳定排序与五分钟节流清理语义。
+            mCommandCoordinator = new YokiFrameHostCommandCoordinator(
+                new YokiFrameFileBridgeHostStore(
+                    mPaths,
+                    (path, json) => GodotEditorFileBridgeJson.WriteAtomic(path, json),
+                    SerializeDeadletterInfo,
+                    () => TryPruneStorage(),
+                    () => TryPruneStorage(),
+                    true),
+                ExecuteCommandForCoordinator,
+                PROCESSING_LEASE,
+                exception => mLastError = exception.Message);
         }
 
         /// <summary>获取当前 Editor 会话是否已启动。</summary>
@@ -76,22 +91,51 @@ namespace YokiFrame
             mSequence = 0;
             mLastError = string.Empty;
             mStartedAtUtc = now.ToString("O");
-            IsRunning = true;
             try
             {
+                var admissionResult = YokiFrameHostAdmissionLease.TryAcquire(
+                    mPaths.AdmissionLockPath,
+                    out mAdmissionLease,
+                    out var admissionError);
+                if (admissionResult == YokiFrameHostAdmissionResult.AlreadyOwned)
+                {
+                    throw new YokiFrameHostAlreadyOwnedException(ENGINE_ID);
+                }
+
+                if (admissionResult == YokiFrameHostAdmissionResult.StorageError)
+                {
+                    throw admissionError ?? new IOException("Godot Editor Host admission failed.");
+                }
+
+                IsRunning = true;
                 mPaths.EnsureDirectories();
+                TryPruneStorage();
                 PublishInitialState();
             }
             catch
             {
                 IsRunning = false;
-                ReleaseActiveState();
+                try
+                {
+                    ReleaseActiveState();
+                }
+                finally
+                {
+                    try
+                    {
+                        mAdmissionLease?.Dispose();
+                    }
+                    finally
+                    {
+                        mAdmissionLease = null;
+                    }
+                }
                 throw;
             }
         }
 
         /// <summary>
-        /// 只更新 heartbeat；registry 身份未变化时不重复写入。
+        /// 更新在线 heartbeat，并重新发布当前 listener capability，避免 Registry 残留失效 endpoint。
         /// </summary>
         public void RefreshHeartbeat()
         {
@@ -99,6 +143,7 @@ namespace YokiFrame
             mSequence++;
             mPaths.EnsureDirectories();
             WriteHeartbeat();
+            WriteEngineRegistry();
         }
 
         /// <summary>
@@ -112,7 +157,21 @@ namespace YokiFrame
             }
 
             IsRunning = false;
-            ReleaseActiveState();
+            try
+            {
+                ReleaseActiveState();
+            }
+            finally
+            {
+                try
+                {
+                    mAdmissionLease?.Dispose();
+                }
+                finally
+                {
+                    mAdmissionLease = null;
+                }
+            }
         }
 
         /// <summary>
@@ -189,19 +248,56 @@ namespace YokiFrame
         /// </summary>
         private void ReleaseActiveState()
         {
-            DeleteIfExists(mPaths.RegistryPath);
-            DeleteIfExists(mPaths.HeartbeatPath);
+            DeleteIfOwned(mPaths.RegistryPath, IsOwnedRegistry);
+            DeleteIfOwned(mPaths.HeartbeatPath, IsOwnedHeartbeat);
         }
 
         /// <summary>
-        /// 删除存在的活动状态文件，缺失时保持幂等。
+        /// 只删除仍属于当前 session/generation 的活动状态文件，避免停止旧 Host 时误删新 Host 状态。
         /// </summary>
         /// <param name="path">待删除路径。</param>
-        private static void DeleteIfExists(string path)
+        /// <param name="isOwned">读取并校验当前文件 owner 的函数。</param>
+        private void DeleteIfOwned(string path, Func<string, bool> isOwned)
         {
-            if (File.Exists(path))
+            if (File.Exists(path) && isOwned(path))
             {
                 File.Delete(path);
+            }
+        }
+
+        /// <summary>判断 Editor registry 是否仍属于当前 Host。</summary>
+        /// <param name="path">registry 文件路径。</param>
+        /// <returns>当前文件仍属于本 Host 时返回 true。</returns>
+        private bool IsOwnedRegistry(string path)
+        {
+            try
+            {
+                var registry = GodotEditorFileBridgeJson.Deserialize<GodotEditorEngineRegistry>(File.ReadAllText(path));
+                return registry != null
+                    && registry.SessionId == mSessionId
+                    && registry.Generation == mGeneration;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>判断 Editor heartbeat 是否仍属于当前 Host。</summary>
+        /// <param name="path">heartbeat 文件路径。</param>
+        /// <returns>当前文件仍属于本 Host 时返回 true。</returns>
+        private bool IsOwnedHeartbeat(string path)
+        {
+            try
+            {
+                var heartbeat = GodotEditorFileBridgeJson.Deserialize<GodotEditorHeartbeat>(File.ReadAllText(path));
+                return heartbeat != null
+                    && heartbeat.SessionId == mSessionId
+                    && heartbeat.Generation == mGeneration;
+            }
+            catch
+            {
+                return false;
             }
         }
 

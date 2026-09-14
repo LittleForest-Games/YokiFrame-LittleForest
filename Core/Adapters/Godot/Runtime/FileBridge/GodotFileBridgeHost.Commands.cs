@@ -1,6 +1,7 @@
 #if GODOT && TOOLS
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 
 namespace YokiFrame
@@ -10,6 +11,8 @@ namespace YokiFrame
     /// </summary>
     public sealed partial class GodotFileBridgeHost
     {
+        private static readonly TimeSpan PROCESSING_LEASE = TimeSpan.FromSeconds(60);
+
         /// <summary>
         /// 消费 commands 顶层全部 JSON，确保每个文件进入 response/archive 或 deadletter 终态。
         /// </summary>
@@ -17,30 +20,46 @@ namespace YokiFrame
         public int ProcessPendingCommands()
         {
             EnsureRunning();
-            if (mIsProcessingCommands || !Directory.Exists(mPaths.CommandsRoot))
+            return mCommandCoordinator.ProcessPendingCommands();
+        }
+
+        /// <summary>
+        /// 解析、执行并序列化 Godot Runtime 命令，供公共协调器写入 terminal response。
+        /// </summary>
+        /// <param name="commandPath">processing 命令路径。</param>
+        /// <returns>已序列化的命令执行结果。</returns>
+        private YokiFrameHostCommandExecution ExecuteCommandForCoordinator(string commandPath)
+        {
+            var envelope = ReadCommandEnvelope(commandPath);
+            var response = ExecuteCommand(envelope, new FileInfo(commandPath).Length);
+            return new YokiFrameHostCommandExecution(
+                envelope.RequestId,
+                GodotFileBridgeJson.Serialize(response));
+        }
+
+
+        /// <summary>
+        /// 按五分钟节流回收终态 FileBridge 证据；清理失败不影响 Runtime Host 继续服务。
+        /// </summary>
+        private void TryPruneStorage()
+        {
+            var nowUtc = DateTime.UtcNow;
+            if (nowUtc < mNextStorageCleanupUtc)
             {
-                return 0;
+                return;
             }
 
-            mIsProcessingCommands = true;
             try
             {
-                var commandPaths = Directory.GetFiles(
-                    mPaths.CommandsRoot,
-                    "*" + YokiFrameFileBridgeLayout.JSON_EXTENSION,
-                    SearchOption.TopDirectoryOnly);
-                Array.Sort(commandPaths, StringComparer.OrdinalIgnoreCase);
-                for (var index = 0; index < commandPaths.Length; index++)
-                {
-                    ProcessCommandFile(commandPaths[index]);
-                }
-
-                return commandPaths.Length;
+                YokiFrameFileBridgePruner.Prune(mPaths.ProjectRoot);
             }
-            finally
+            catch (Exception exception)
             {
-                mIsProcessingCommands = false;
+                // 清理失败不阻断 Host；记录到 bridge_status，供工具侧区分维护失败与正常空闲。
+                mLastError = "Godot Runtime FileBridge storage cleanup failed: " + exception.Message;
             }
+
+            mNextStorageCleanupUtc = nowUtc.AddMinutes(5.0d);
         }
 
         /// <summary>
@@ -50,11 +69,10 @@ namespace YokiFrame
         private YokiFrameCommandDispatcher CreateCommandDispatcher()
         {
             var kitCommands = mKitInteractions.GetCommandDescriptors();
-            YokiFrameCommandDescriptor[] commands = new YokiFrameCommandDescriptor[3 + kitCommands.Length];
-            commands[0] = new YokiFrameCommandDescriptor("System", "ping", YokiFrameCommandKind.ReadOnly);
-            commands[1] = new YokiFrameCommandDescriptor("System", "bridge_status", YokiFrameCommandKind.ReadOnly);
-            commands[2] = new YokiFrameCommandDescriptor("System", "list_commands", YokiFrameCommandKind.ReadOnly);
-            Array.Copy(kitCommands, 0, commands, 3, kitCommands.Length);
+            var systemCommands = GodotSystemCommandHandler.CommandDescriptors;
+            YokiFrameCommandDescriptor[] commands = new YokiFrameCommandDescriptor[systemCommands.Length + kitCommands.Length];
+            Array.Copy(systemCommands, 0, commands, 0, systemCommands.Length);
+            Array.Copy(kitCommands, 0, commands, systemCommands.Length, kitCommands.Length);
             YokiFrameCommandPolicy policy = YokiFrameCommandPolicy.CreateWithDefaultSources(commands);
             return new YokiFrameCommandDispatcher(
                 policy,
@@ -116,26 +134,6 @@ namespace YokiFrame
         }
 
         /// <summary>
-        /// 处理单个命令文件；异常会转换为 deadletter，不阻塞后续命令。
-        /// </summary>
-        /// <param name="commandPath">命令文件完整路径。</param>
-        private void ProcessCommandFile(string commandPath)
-        {
-            try
-            {
-                var envelope = ReadCommandEnvelope(commandPath);
-                var response = ExecuteCommand(envelope, new FileInfo(commandPath).Length);
-                WriteResponse(envelope.RequestId, response);
-                ArchiveCommand(commandPath);
-            }
-            catch (Exception exception)
-            {
-                mLastError = exception.Message;
-                MoveToDeadletter(commandPath, "CommandProcessingFailed", exception.Message);
-            }
-        }
-
-        /// <summary>
         /// 读取命令文件，执行文件大小、JSON、协议、engine、safe ID 和 payload 语法校验。
         /// </summary>
         /// <param name="commandPath">命令文件完整路径。</param>
@@ -150,6 +148,14 @@ namespace YokiFrame
 
             var envelope = GodotFileBridgeJson.Deserialize<GodotCommandEnvelope>(File.ReadAllText(commandPath));
             ValidateEnvelope(envelope);
+            if (!string.Equals(
+                    Path.GetFileNameWithoutExtension(commandPath),
+                    envelope.RequestId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Command file name does not match envelope requestId.");
+            }
+
             return envelope;
         }
 
@@ -159,20 +165,21 @@ namespace YokiFrame
         /// <param name="envelope">待校验命令信封。</param>
         private static void ValidateEnvelope(GodotCommandEnvelope envelope)
         {
-            if (envelope.ProtocolVersion != YokiFrameFileBridgeContract.PROTOCOL_VERSION
-                || envelope.EngineId != ENGINE_ID)
+            var error = YokiFrameCommandEnvelopeValidator.Validate(
+                envelope.ProtocolVersion,
+                envelope.EngineId,
+                ENGINE_ID,
+                envelope.Source,
+                envelope.RequestId,
+                envelope.Kit,
+                envelope.Action,
+                envelope.TimeoutMs,
+                envelope.CreatedAtUtc,
+                envelope.PayloadJson);
+            if (error != null)
             {
-                throw new InvalidDataException("Command envelope protocolVersion or engineId is invalid.");
+                throw new InvalidDataException(error);
             }
-
-            if (!YokiFrameSafeIdContract.IsSafeId(envelope.RequestId)
-                || !YokiFrameSafeIdContract.IsSafeId(envelope.Kit)
-                || !YokiFrameSafeIdContract.IsSafeId(envelope.Action))
-            {
-                throw new InvalidDataException("Command envelope contains unsafe requestId, kit or action.");
-            }
-
-            GodotFileBridgeJson.ValidatePayloadJson(envelope.PayloadJson);
         }
 
         /// <summary>
@@ -189,11 +196,32 @@ namespace YokiFrame
                 envelope.Action,
                 envelope.PayloadJson,
                 envelope.TimeoutMs,
-                commandFileBytes);
+                commandFileBytes,
+                envelope.RequestId,
+                ParseCreatedAtUtc(envelope.CreatedAtUtc));
             var result = mDispatcher.Dispatch(request);
             return result.IsSuccess
                 ? CreateSuccessResponse(envelope.RequestId, result.ResultJson)
                 : CreateErrorResponse(envelope.RequestId, result.ErrorCode, result.ErrorMessage);
+        }
+
+        /// <summary>
+        /// 把已通过信封校验的创建时间转换为 UTC，供 dispatcher 计算执行 deadline。
+        /// </summary>
+        /// <param name="createdAtUtc">信封创建时间文本。</param>
+        /// <returns>UTC 创建时间。</returns>
+        private static DateTimeOffset ParseCreatedAtUtc(string createdAtUtc)
+        {
+            if (!DateTimeOffset.TryParse(
+                    createdAtUtc,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out var value))
+            {
+                throw new InvalidDataException("Command envelope createdAtUtc is invalid.");
+            }
+
+            return value.ToUniversalTime();
         }
 
         /// <summary>
@@ -229,7 +257,8 @@ namespace YokiFrame
                 ProtocolFileCount = storage.FileCount,
                 ProtocolBytes = storage.TotalBytes,
                 OldestProtocolFileUtc = storage.OldestFileUtc,
-                BackpressureActive = false,
+                BackpressureActive = mCommandCoordinator.LastBatchWasLimited,
+                LastPollLimitReason = mCommandCoordinator.LastBatchLimitReason,
                 LastError = mLastError,
                 FastChannel = "filebridge-fallback"
             });
@@ -275,86 +304,19 @@ namespace YokiFrame
         }
 
         /// <summary>
-        /// 原子写入指定请求的 terminal response。
-        /// </summary>
-        /// <param name="requestId">请求标识。</param>
-        /// <param name="response">响应 DTO。</param>
-        private void WriteResponse(string requestId, GodotCommandResponse response)
-        {
-            GodotFileBridgeJson.WriteAtomic(
-                mPaths.GetResponsePath(requestId),
-                GodotFileBridgeJson.Serialize(response));
-        }
 
         /// <summary>
-        /// 将成功处理的命令移动到 archive，冲突时追加 UTC 毫秒后缀。
+        /// 序列化与既有 wire 格式一致的 deadletter 诊断 JSON，供共享命令存储写入证据。
         /// </summary>
-        /// <param name="commandPath">原始命令路径。</param>
-        private void ArchiveCommand(string commandPath)
+        private static string SerializeDeadletterInfo(string sourcePath, string errorCode, string errorMessage)
         {
-            var archivePath = mPaths.GetArchivePath(commandPath);
-            if (File.Exists(archivePath))
+            return GodotFileBridgeJson.Serialize(new GodotDeadletterInfo
             {
-                archivePath += "." + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            }
-
-            File.Move(commandPath, archivePath);
-        }
-
-        /// <summary>
-        /// 写入 deadletter 诊断，并移动原始请求作为不可丢失证据。
-        /// </summary>
-        /// <param name="commandPath">原始命令路径。</param>
-        /// <param name="errorCode">错误码。</param>
-        /// <param name="errorMessage">错误说明。</param>
-        private void MoveToDeadletter(string commandPath, string errorCode, string errorMessage)
-        {
-            var deadletterId = CreateDeadletterId(commandPath);
-            GodotDeadletterInfo info = new GodotDeadletterInfo
-            {
-                SourcePath = commandPath,
+                SourcePath = sourcePath,
                 ErrorCode = errorCode,
                 ErrorMessage = errorMessage,
                 WrittenAtUtc = DateTimeOffset.UtcNow.ToString("O")
-            };
-            GodotFileBridgeJson.WriteAtomic(
-                mPaths.GetDeadletterInfoPath(deadletterId),
-                GodotFileBridgeJson.Serialize(info));
-            MoveDeadletterRequest(commandPath, deadletterId);
-        }
-
-        /// <summary>
-        /// 根据原文件名创建安全 deadletter ID，不安全时使用时间和随机后缀。
-        /// </summary>
-        /// <param name="commandPath">原始命令路径。</param>
-        /// <returns>安全 deadletter ID。</returns>
-        private static string CreateDeadletterId(string commandPath)
-        {
-            var fileName = Path.GetFileNameWithoutExtension(commandPath);
-            return YokiFrameSafeIdContract.IsSafeId(fileName)
-                ? fileName
-                : "invalid-" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-" + Guid.NewGuid().ToString("N");
-        }
-
-        /// <summary>
-        /// 移动 deadletter 原始请求，目标冲突时追加 UTC 毫秒后缀。
-        /// </summary>
-        /// <param name="commandPath">原始命令路径。</param>
-        /// <param name="deadletterId">安全 deadletter ID。</param>
-        private void MoveDeadletterRequest(string commandPath, string deadletterId)
-        {
-            if (!File.Exists(commandPath))
-            {
-                return;
-            }
-
-            var requestPath = mPaths.GetDeadletterRequestPath(deadletterId);
-            if (File.Exists(requestPath))
-            {
-                requestPath += "." + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            }
-
-            File.Move(commandPath, requestPath);
+            });
         }
     }
 }

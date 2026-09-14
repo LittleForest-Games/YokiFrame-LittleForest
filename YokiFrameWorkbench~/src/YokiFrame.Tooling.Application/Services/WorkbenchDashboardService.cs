@@ -1,17 +1,7 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
-using YokiFrame.Client;
 using YokiFrame.Client.FileBridge.Diagnostics;
-using YokiFrame.Protocol.Common;
 using YokiFrame.Protocol.FileBridge;
-using YokiFrame.Protocol.Results;
-using YokiFrame.Protocol.Telemetry.SharedMemory;
 using YokiFrame.Tooling.Application.Engines;
 using YokiFrame.Tooling.Application.Models;
-using YokiFrame.Tooling.Application.Models.Architecture;
-using YokiFrame.Tooling.Application.Models.SaveKit;
-using YokiFrame.Tooling.Application.Models.SpatialKit;
-using YokiFrame.Tooling.Application.Models.UIKit;
 
 namespace YokiFrame.Tooling.Application.Services;
 
@@ -32,8 +22,10 @@ public sealed partial class WorkbenchDashboardService : IDisposable
     {
         List<string> errors = new();
         var generatedAtUtc = DateTimeOffset.UtcNow;
-        var engines = ReadEngines(errors);
-        var engineSelection = mEngineSelectionService.Select(engineId, engines, generatedAtUtc);
+        var engineSession = mEngineSessionCoordinator.Read(engineId, generatedAtUtc);
+        var engines = engineSession.Engines;
+        var engineSelection = engineSession.Selection;
+        errors.AddRange(engineSession.Diagnostics.Select(FormatEngineSessionDiagnostic));
         var harnessSummary = ReadHarnessSummary(errors);
         if (!engineSelection.IsSelected)
         {
@@ -41,12 +33,19 @@ public sealed partial class WorkbenchDashboardService : IDisposable
                 generatedAtUtc,
                 engines,
                 engineSelection,
+                engineSession,
                 harnessSummary,
                 errors);
         }
 
         var selectedEngineId = engineSelection.SelectedEngineId;
         var bridgeStatus = ReadBridgeStatus(selectedEngineId, errors);
+        if (bridgeStatus != null
+            && engineSession.Heartbeats.TryGetValue(selectedEngineId, out var sessionHeartbeat))
+        {
+            bridgeStatus.Heartbeat = sessionHeartbeat;
+        }
+
         var bridgeHealth = CreateBridgeHealth(selectedEngineId, engines, bridgeStatus, generatedAtUtc);
         var selectedRegistry = engines.FirstOrDefault(
             entry => string.Equals(entry.EngineId, selectedEngineId, StringComparison.Ordinal));
@@ -57,27 +56,7 @@ public sealed partial class WorkbenchDashboardService : IDisposable
             selectedEngineId,
             bridgeHealth,
             SupportsTelemetry(selectedRegistry));
-        var architectureState = WorkbenchDashboardKitProjections.ProjectArchitecture(
-            selectedEngineId, bridgeHealth, snapshots);
-        var fsmKitState = WorkbenchDashboardKitProjections.ProjectFsmKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var eventKitState = WorkbenchDashboardKitProjections.ProjectEventKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var logKitState = WorkbenchDashboardKitProjections.ProjectLogKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var poolKitState = WorkbenchDashboardKitProjections.ProjectPoolKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var resKitState = WorkbenchDashboardKitProjections.ProjectResKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var actionKitState = WorkbenchDashboardKitProjections.ProjectActionKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var audioKitState = WorkbenchDashboardKitProjections.ProjectAudioKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var spatialKitState = WorkbenchDashboardKitProjections.ProjectSpatialKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var saveKitState = WorkbenchDashboardKitProjections.ProjectSaveKit(
-            selectedEngineId, bridgeHealth, snapshots);
-        var uiKitState = WorkbenchDashboardKitProjections.ProjectUIKit(
+        var projections = WorkbenchDashboardKitProjections.ProjectAll(
             selectedEngineId, bridgeHealth, snapshots);
 
         return new WorkbenchDashboardState(
@@ -91,17 +70,21 @@ public sealed partial class WorkbenchDashboardService : IDisposable
             snapshots,
             harnessSummary,
             errors,
-            fsmKitState,
-            architectureState,
-            eventKitState,
-            logKitState,
-            poolKitState,
-            resKitState,
-            actionKitState,
-            audioKitState,
-            spatialKitState,
-            uiKitState,
-            saveKitState);
+            projections,
+            engineSession);
+    }
+
+    /// <summary>
+    /// 把应用层会话诊断转换为 Dashboard 的稳定错误文本；详细证据保留在快照中。
+    /// </summary>
+    /// <param name="diagnostic">应用层会话诊断。</param>
+    /// <returns>Dashboard 错误摘要。</returns>
+    private static string FormatEngineSessionDiagnostic(EngineSessionDiagnostic diagnostic)
+    {
+        var engineSuffix = string.IsNullOrWhiteSpace(diagnostic.EngineId)
+            ? string.Empty
+            : " [" + diagnostic.EngineId + "]";
+        return "engine session " + diagnostic.Code + engineSuffix + ": " + diagnostic.Message;
     }
 
     /// <summary>
@@ -117,24 +100,6 @@ public sealed partial class WorkbenchDashboardService : IDisposable
         CancellationToken cancellationToken)
     {
         return await SendCommandAsync(engineId, "System", action, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// 读取 engine registry 列表；失败时记录错误并返回空列表。
-    /// </summary>
-    /// <param name="errors">错误收集列表。</param>
-    /// <returns>engine registry 列表。</returns>
-    private IReadOnlyList<EngineRegistryEntry> ReadEngines(List<string> errors)
-    {
-        try
-        {
-            return mClient.ReadEngineEntries();
-        }
-        catch (Exception exception)
-        {
-            errors.Add("engine list: " + exception.Message);
-            return Array.Empty<EngineRegistryEntry>();
-        }
     }
 
     /// <summary>

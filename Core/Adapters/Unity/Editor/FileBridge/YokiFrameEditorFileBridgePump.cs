@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
@@ -16,6 +17,8 @@ namespace YokiFrame
         // 心跳仅承担低频 FileBridge 存活证明；实时 Kit 状态由 Shared Memory 承载，避免机械盘被高频写入。
         private const double HEARTBEAT_INTERVAL_SECONDS = 5.0d;
         private const double COMMAND_POLL_INTERVAL_SECONDS = 0.2d;
+        private const double STORAGE_CLEANUP_INTERVAL_SECONDS = 300.0d;
+        private static readonly TimeSpan PROCESSING_LEASE = TimeSpan.FromSeconds(60);
         private static readonly string[] sHostStateKits = { "System" };
         private static long sToolProviderRevision;
         private static YokiFrameKitInteractionRegistry sKitInteractions =
@@ -23,20 +26,22 @@ namespace YokiFrame
         // 声明顺序早于 sCommandDispatcher，保证 CreateCommandDispatcher 写入的策略缓存不会被后续字段初始化器覆盖。
         private static YokiFrameCommandPolicy sHostCommandPolicy;
         private static YokiFrameCommandDispatcher sCommandDispatcher = CreateCommandDispatcher();
-        private static readonly Dictionary<string, long> sKitTelemetryVersions = new();
-        private static readonly Dictionary<string, long> sKitSnapshotVersions = new();
-        private static readonly HashSet<string> sTelemetryFallbackKits = new();
+        // 三宿主共享的 Kit 状态版本簿；按 Kit 回落语义由 tracker 承载。
+        private static readonly YokiFrameKitStateVersionTracker sStateVersions = new YokiFrameKitStateVersionTracker();
+        private static string sCommandProcessingError = string.Empty;
         private static string sSessionId = Guid.NewGuid().ToString("N");
         private static long sGeneration = DateTimeOffset.UtcNow.Ticks;
         private static string sStartedAtUtc = DateTimeOffset.UtcNow.ToString("O");
 #if UNITY_EDITOR_WIN
         private static YokiFrameEditorNamedPipeFastChannelHost sFastChannelHost;
 #endif
+        private static YokiFrameHostAdmissionLease sAdmissionLease;
         private static string sFastChannelStartError = string.Empty;
         private static double sNextHeartbeatTime;
         private static double sNextCommandPollTime;
+        private static double sNextStorageCleanupTime;
         private static long sSequence;
-        private static bool sIsProcessingCommands;
+        private static YokiFrameHostCommandCoordinator sCommandCoordinator;
 
         /// <summary>
         /// 注册 Editor update 回调，并立即写入首帧 FileBridge 文件。
@@ -48,11 +53,39 @@ namespace YokiFrame
                 return;
             }
 
+            YokiFrameHostAdmissionResult admissionResult;
+            Exception admissionError;
+            try
+            {
+                admissionResult = YokiFrameHostAdmissionLease.TryAcquire(
+                    YokiFrameEditorFileBridgePaths.GetAdmissionLockPath(),
+                    out sAdmissionLease,
+                    out admissionError);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("YokiFrame unity-editor Host admission path validation failed: " + exception.Message);
+                sAdmissionLease = null;
+                return;
+            }
+
+            if (admissionResult != YokiFrameHostAdmissionResult.Acquired)
+            {
+                var message = admissionResult == YokiFrameHostAdmissionResult.AlreadyOwned
+                    ? "YokiFrame unity-editor Host is already owned by another process."
+                    : "YokiFrame unity-editor Host admission failed: " + admissionError?.Message;
+                Debug.LogWarning(message);
+                sAdmissionLease = null;
+                return;
+            }
+
             YokiFrameEditorTelemetryWriter.RegisterLifecycleHooks();
             EditorApplication.update -= OnEditorUpdate;
             EditorApplication.update += OnEditorUpdate;
             RegisterFastChannelLifecycleHooks();
             EnsureBridgeDirectories();
+            TryPruneProjectStorage();
+            sNextStorageCleanupTime = EditorApplication.timeSinceStartup + STORAGE_CLEANUP_INTERVAL_SECONDS;
             if (IsFastChannelTransitionPending())
             {
                 PublishDisconnectedState();
@@ -92,6 +125,12 @@ namespace YokiFrame
 
             WriteChangedKitInteractionTelemetrySafely();
 
+            if (now >= sNextStorageCleanupTime)
+            {
+                TryPruneProjectStorage();
+                sNextStorageCleanupTime = now + STORAGE_CLEANUP_INTERVAL_SECONDS;
+            }
+
             if (now >= sNextCommandPollTime)
             {
                 ProcessPendingCommandsSafely();
@@ -114,9 +153,7 @@ namespace YokiFrame
                 CreateKitInteractions(out long capturedRevision);
             sKitInteractions = interactions;
             sCommandDispatcher = CreateCommandDispatcher();
-            sKitTelemetryVersions.Clear();
-            sKitSnapshotVersions.Clear();
-            sTelemetryFallbackKits.Clear();
+            sStateVersions.Clear();
             ClearNamedTelemetryVersions();
             sToolProviderRevision = capturedRevision;
             WriteCompleteBridgeStateSafely();
@@ -190,57 +227,51 @@ namespace YokiFrame
         /// <summary>
         /// 消费 commands 目录顶层所有待处理 JSON 命令。
         /// </summary>
-        private static void ProcessPendingCommands()
+        private static int ProcessPendingCommands()
         {
-            if (sIsProcessingCommands)
-            {
-                return;
-            }
-
-            // 固定根路径已缓存，本轮入口统一复核一次重解析点防护，替代每个 getter 各自重走全链。
-            YokiFrameEditorFileBridgePaths.EnsureBridgeRootsAreSafe();
-            var commandsRoot = YokiFrameEditorFileBridgePaths.GetCommandsRoot();
-            if (!Directory.Exists(commandsRoot))
-            {
-                return;
-            }
-
-            sIsProcessingCommands = true;
-            try
-            {
-                foreach (var commandPath in Directory.EnumerateFiles(
-                             commandsRoot,
-                             "*" + YokiFrameFileBridgeLayout.JSON_EXTENSION,
-                             SearchOption.TopDirectoryOnly))
-                {
-                    ProcessCommandFile(commandPath);
-                }
-            }
-            finally
-            {
-                sIsProcessingCommands = false;
-            }
+            return GetCommandCoordinator().ProcessPendingCommands();
         }
 
         /// <summary>
-        /// 读取并处理单个命令文件，确保成功或失败都会产生终态证据。
+        /// 创建并缓存 Unity Editor 的命令生命周期协调器。
         /// </summary>
-        /// <param name="commandPath">命令文件路径。</param>
-        private static void ProcessCommandFile(string commandPath)
+        /// <returns>共享命令协调器。</returns>
+        private static YokiFrameHostCommandCoordinator GetCommandCoordinator()
         {
-            try
+            if (sCommandCoordinator == null)
             {
-                var envelope = ReadCommandEnvelope(commandPath);
-                var commandFileBytes = new FileInfo(commandPath).Length;
-                var response = ExecuteCommand(envelope, commandFileBytes);
-                WriteResponse(envelope.requestId, response);
-                ArchiveCommand(commandPath);
+                // 共享命令存储承载三宿主一致的枚举、认领、终态与 deadletter 移动逻辑；
+                // Unity 宿主保持文件系统枚举顺序，清理由外层 300 秒定时器负责。
+                sCommandCoordinator = new YokiFrameHostCommandCoordinator(
+                    new YokiFrameFileBridgeHostStore(
+                        new YokiFrameEditorFileBridgeEnginePaths(),
+                        (path, json) => YokiFrameEditorFileBridgeJson.WriteAtomic(path, json),
+                        SerializeDeadletterInfo,
+                        () => { },
+                        () => { },
+                        false),
+                    ExecuteCommandForCoordinator,
+                    PROCESSING_LEASE,
+                    exception => sCommandProcessingError = exception.Message);
             }
-            catch (Exception exception)
-            {
-                MoveToDeadletter(commandPath, "CommandProcessingFailed", exception.Message);
-            }
+
+            return sCommandCoordinator;
         }
+
+        /// <summary>
+        /// 解析、执行并序列化 Unity Editor 命令，供公共协调器写入 terminal response。
+        /// </summary>
+        /// <param name="commandPath">processing 命令路径。</param>
+        /// <returns>已序列化的命令执行结果。</returns>
+        private static YokiFrameHostCommandExecution ExecuteCommandForCoordinator(string commandPath)
+        {
+            var envelope = ReadCommandEnvelope(commandPath);
+            var response = ExecuteCommand(envelope, new FileInfo(commandPath).Length);
+            return new YokiFrameHostCommandExecution(
+                envelope.requestId,
+                YokiFrameEditorFileBridgeJson.ToJson(response));
+        }
+
 
         /// <summary>
         /// 读取并校验命令信封，拒绝路径不安全或非当前 engine 的命令。
@@ -253,6 +284,14 @@ namespace YokiFrame
             var json = File.ReadAllText(commandPath);
             var envelope = YokiFrameEditorFileBridgeJson.FromJson<YokiFrameEditorCommandEnvelope>(json);
             ValidateEnvelope(envelope);
+            if (!string.Equals(
+                    Path.GetFileNameWithoutExtension(commandPath),
+                    envelope.requestId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Command file name does not match envelope requestId.");
+            }
+
             return envelope;
         }
 
@@ -262,18 +301,22 @@ namespace YokiFrame
         /// <param name="envelope">待校验命令信封。</param>
         private static void ValidateEnvelope(YokiFrameEditorCommandEnvelope envelope)
         {
-            if (envelope == null
-                || envelope.protocolVersion != YokiFrameFileBridgeContract.PROTOCOL_VERSION
-                || envelope.engineId != YokiFrameEditorFileBridgePaths.ENGINE_ID)
+            var error = envelope == null
+                ? "Command envelope is missing."
+                : YokiFrameCommandEnvelopeValidator.Validate(
+                    envelope.protocolVersion,
+                    envelope.engineId,
+                    YokiFrameEditorFileBridgePaths.ENGINE_ID,
+                    envelope.source,
+                    envelope.requestId,
+                    envelope.kit,
+                    envelope.action,
+                    envelope.timeoutMs,
+                    envelope.createdAtUtc,
+                    envelope.payloadJson);
+            if (error != null)
             {
-                throw new InvalidDataException("Command envelope protocolVersion or engineId is invalid.");
-            }
-
-            if (!YokiFrameEditorFileBridgeJson.IsSafeId(envelope.requestId)
-                || !YokiFrameEditorFileBridgeJson.IsSafeId(envelope.kit)
-                || !YokiFrameEditorFileBridgeJson.IsSafeId(envelope.action))
-            {
-                throw new InvalidDataException("Command envelope contains unsafe requestId, kit or action.");
+                throw new InvalidDataException(error);
             }
         }
 
@@ -331,8 +374,10 @@ namespace YokiFrame
                 protocolFileCount = storage.fileCount,
                 protocolBytes = storage.totalBytes,
                 oldestProtocolFileUtc = storage.oldestFileUtc,
-                backpressureActive = false,
-                lastPollLimitReason = string.Empty,
+                backpressureActive = sCommandCoordinator != null && sCommandCoordinator.LastBatchWasLimited,
+                lastPollLimitReason = sCommandCoordinator == null
+                    ? string.Empty
+                    : sCommandCoordinator.LastBatchLimitReason,
                 bridgeBusyCount = 0,
                 lastError = CreateBridgeLastError()
             };
@@ -344,6 +389,11 @@ namespace YokiFrame
         /// <returns>启动失败原因优先，其次为 listener 记录的最近错误。</returns>
         private static string CreateBridgeLastError()
         {
+            if (!string.IsNullOrEmpty(sCommandProcessingError))
+            {
+                return sCommandProcessingError;
+            }
+
             if (!string.IsNullOrEmpty(sFastChannelStartError))
             {
                 return sFastChannelStartError;

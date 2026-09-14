@@ -308,7 +308,7 @@ UIKit.ClosePanel(panel);
 | `UIElement` | Element 节点 | 生成 Panel 内部可复用元素 |
 | `UIComponent` | Component 节点 | 生成可复用 UI 组件 |
 
-一个节点只挂一个 `Bind`。用户 partial 与 Designer 分开保存，重新生成不会覆盖用户 partial。
+一个节点只挂一个 `Bind`。用户 partial 与 Designer 分开保存，重新生成不会覆盖用户 partial。Designer 文件会带有 `YokiFrame UIKit` 自动生成头部，请勿直接修改其中内容。
 
 ## 生命周期与错误边界
 
@@ -319,7 +319,7 @@ UIKit.ClosePanel(panel);
 
 ## 在工具中查看
 
-Workbench 可以只读查看 Unity Runtime UI 摘要，并在 Unity Editor 中提供 Panel Prefab、Bind 和 Panel 代码生成入口。它不会远程打开、关闭或清理 Runtime UI；Element 和 Component 的专属生成入口仍在各自 Inspector。
+Workbench 可以只读查看 Unity Runtime UI 摘要，并在 Unity Editor 中作为 Panel Prefab 创建与 Panel 代码生成的统一入口提供操作表单。它不会远程打开、关闭或清理 Runtime UI；Element 和 Component 的专属生成入口仍在各自 Inspector，Unity 不再提供独立的 Panel 创建菜单或窗口。
 
 ## 限制与相关资料
 

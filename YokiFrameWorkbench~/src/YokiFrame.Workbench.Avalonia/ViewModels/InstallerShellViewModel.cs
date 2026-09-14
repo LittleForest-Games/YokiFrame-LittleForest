@@ -7,7 +7,7 @@ namespace YokiFrame.Workbench.Avalonia.ViewModels;
 /// <summary>
 /// 把 Installer Application 会话投影为旧版一致的单页安装工作流。
 /// </summary>
-public sealed partial class InstallerShellViewModel : ViewModelBase
+public sealed partial class InstallerShellViewModel : ViewModelBase, IDisposable
 {
     private const string DEFAULT_GIT_URL = "https://github.com/HinataYoki/YokiFrame.git";
 
@@ -16,13 +16,20 @@ public sealed partial class InstallerShellViewModel : ViewModelBase
     private readonly InstallerInputDetectionService mInputDetection;
     private readonly IInstallerFolderPicker mFolderPicker;
     private readonly IGodotRuntimeBootstrapper mGodotRuntimeBootstrapper;
+    private readonly SemaphoreSlim mGodotRuntimeBootstrapGate = new(1, 1);
     private readonly SynchronizationContext? mSynchronizationContext;
     private string mSourcePackageRoot;
     private string mTargetProjectRoot;
     private string mGitUrl = DEFAULT_GIT_URL;
-    private string mEngineStatusText = "未检测";
-    private string mTargetStatusText = "等待选择目录";
-    private string mSessionStatusText = "安装器已就绪";
+    private string mEngineStatusText = WorkbenchI18nService.Instance.GetString(
+        "String.Installer.EngineNotDetected",
+        "未检测");
+    private string mTargetStatusText = WorkbenchI18nService.Instance.GetString(
+        "String.Installer.TargetWaiting",
+        "等待选择目录");
+    private string mSessionStatusText = WorkbenchI18nService.Instance.GetString(
+        "String.Installer.Session.Ready",
+        "安装器已就绪");
     private InstallerTargetKind mTargetKind;
     private InstallerInstallMode mInstallMode = InstallerInstallMode.UnityLocal;
     private bool mRepairGodotProjectSettings = true;
@@ -36,13 +43,17 @@ public sealed partial class InstallerShellViewModel : ViewModelBase
     private string mCompletionSummaryText = string.Empty;
     private string mOutcomeDetailsTitle = string.Empty;
     private string mOutcomeDetailsText = string.Empty;
-    private string mPlanActionsText = "等待生成安装计划";
+    private string mPlanActionsText = WorkbenchI18nService.Instance.GetString(
+        "String.Installer.Plan.Waiting",
+        "等待生成安装计划");
     private string mPlanWarningsText = string.Empty;
     private bool mIsPlanWarningVisible;
     private int mProjectedLogCount;
     private InstallerPlanPreview? mPresentedPlan;
     private InstallerExecutionResult? mPresentedResult;
     private bool mIsGodotRuntimeBootstrapRunning;
+    private bool mIsGodotRuntimeBootstrapOpeningInstaller;
+    private bool mIsDisposed;
 
     /// <summary>
     /// 创建 Installer ViewModel 并注入 Application 会话、自动检测和原生目录选择边界。
@@ -104,7 +115,10 @@ public sealed partial class InstallerShellViewModel : ViewModelBase
             CanBootstrapGodotRuntime);
         ClearLogCommand = new RelayCommand(ClearLog);
         mSession.StateChanged += OnSessionStateChanged;
-        AppendLocalLog("安装器已就绪。");
+        WorkbenchI18nService.Instance.CultureChanged += OnCultureChanged;
+        AppendLocalLog(WorkbenchI18nService.Instance.GetString(
+            "String.Installer.Log.Ready",
+            "安装器已就绪。"));
     }
 
     /// <summary>
@@ -449,4 +463,19 @@ public sealed partial class InstallerShellViewModel : ViewModelBase
     /// 获取清空当前日志显示命令。
     /// </summary>
     public RelayCommand ClearLogCommand { get; }
+
+    /// <summary>
+    /// 解除会话和语言事件订阅，避免关闭 Installer 后静态服务继续持有页面状态。
+    /// </summary>
+    public void Dispose()
+    {
+        if (mIsDisposed)
+        {
+            return;
+        }
+
+        mIsDisposed = true;
+        mSession.StateChanged -= OnSessionStateChanged;
+        WorkbenchI18nService.Instance.CultureChanged -= OnCultureChanged;
+    }
 }

@@ -13,15 +13,6 @@ internal static class CliPlayerBuildCommands
     private const string GODOT_ENGINE = "godot";
     private const string DEBUG_CONFIGURATION = "debug";
     private const string RELEASE_CONFIGURATION = "release";
-    private static readonly HashSet<string> sAllowedOptions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "configuration",
-        "engine",
-        "godot",
-        "output",
-        "preset",
-        "project"
-    };
 
     /// <summary>判断命令是否属于 Player 构建入口，供 Program 在创建 FileBridge client 前分流。</summary>
     /// <param name="commandLine">已解析命令行。</param>
@@ -50,26 +41,36 @@ internal static class CliPlayerBuildCommands
                 "Use player build --engine godot.");
         }
 
-        ValidateOptionSchema(commandLine);
         var options = CreateOptions(commandLine, projectRoot);
+        if (CliStatusProjection.IsDryRun(commandLine))
+        {
+            return WriteDryRun(options);
+        }
+
         var result = await RunGodotExportAsync(options, cancellationToken).ConfigureAwait(false);
         return WriteResult(result);
     }
 
-    /// <summary>只允许稳定公开参数，避免拼写错误被静默忽略。</summary>
-    /// <param name="commandLine">已解析命令行。</param>
-    private static void ValidateOptionSchema(CliCommandLine commandLine)
+    /// <summary>
+    /// 输出 Godot 导出计划：CreateOptions 已校验项目文件、preset、配置和输出边界，此处只报告目标文件。
+    /// </summary>
+    /// <param name="options">已验证构建选项。</param>
+    /// <returns>成功退出码。</returns>
+    private static int WriteDryRun(GodotPlayerBuildOptions options)
     {
-        foreach (var optionName in commandLine.OptionNames)
-        {
-            if (!sAllowedOptions.Contains(optionName))
+        JsonObject payload = CliStatusProjection.CreateDryRunEnvelope(
+            "player build",
+            options.ProjectRoot,
+            new[]
             {
-                throw CreateInputException(
-                    "UnknownPlayerBuildOption",
-                    "Unsupported player build option: --" + optionName + ".",
-                    "Use --project, --engine, --godot, --preset, --output or --configuration.");
-            }
-        }
+                (options.OutputPath, File.Exists(options.OutputPath)),
+                (options.LogPath, false)
+            },
+            "player build");
+        payload["engine"] = "Godot";
+        payload["configuration"] = options.Configuration;
+        payload["preset"] = options.Preset;
+        return CliJsonOutput.WriteSuccess(payload);
     }
 
     /// <summary>把 CLI 文本参数转换为经过路径和项目文件校验的 Godot 导出选项。</summary>

@@ -138,6 +138,32 @@ namespace YokiFrame.Tests
             }
         }
 
+        /// <summary>验证非 C# 标识符的场景根不会中断 Bind Inspector 渲染，只禁用代码跳转入口。</summary>
+        [Test]
+        public void BindInspectorAllowsNonIdentifierRootName()
+        {
+            GameObject root = new("Canvas (Environment)", typeof(RectTransform));
+            GameObject boundObject = new("ItemsSlot", typeof(RectTransform), typeof(UnityButton), typeof(Bind));
+            boundObject.transform.SetParent(root.transform, false);
+            Bind bind = boundObject.GetComponent<Bind>();
+            bind.Name = "ItemsSlot";
+            bind.Target = boundObject.GetComponent<UnityButton>();
+            UnityInspectorEditor editor = UnityInspectorEditor.CreateEditor(bind);
+            try
+            {
+                VisualElement visualRoot = editor.CreateInspectorGUI();
+                Assert.IsNotNull(visualRoot);
+                Assert.IsTrue(visualRoot.ClassListContains("yoki-editor-inspector"));
+                AssertVisualText(visualRoot, "绑定类型");
+                AssertButton(visualRoot, "代码未生成");
+            }
+            finally
+            {
+                Object.DestroyImmediate(editor);
+                Object.DestroyImmediate(root);
+            }
+        }
+
         /// <summary>验证空 Member 配置打开 Inspector 后默认选择最后一个非 Bind 组件。</summary>
         [Test]
         public void BindInspectorDefaultsToLastNonBindComponent()
@@ -267,13 +293,14 @@ namespace YokiFrame.Tests
                 "生成 UIComponent 代码");
         }
 
-        /// <summary>验证 Assets 上不再暴露把任意 Prefab 当 Panel 生成的右键入口。</summary>
+        /// <summary>验证旧的 Assets/Prefab 生成入口和独立 Panel 创建菜单均已移除。</summary>
         [Test]
         public void PrefabContextMenuGenerationEntryIsRemoved()
         {
             const BindingFlags FLAGS = BindingFlags.Static | BindingFlags.NonPublic;
             Assert.IsNull(typeof(UIKitBindShortcuts).GetMethod("GenerateSelectedPrefab", FLAGS));
             Assert.IsNull(typeof(UIKitBindShortcuts).GetMethod("CanGenerateSelectedPrefab", FLAGS));
+            Assert.IsNull(typeof(UIKitBindShortcuts).GetMethod("OpenPanelCreator", FLAGS));
         }
 
         /// <summary>创建指定绑定 owner，并验证 InspectorKit、绑定树和专有生成按钮。</summary>

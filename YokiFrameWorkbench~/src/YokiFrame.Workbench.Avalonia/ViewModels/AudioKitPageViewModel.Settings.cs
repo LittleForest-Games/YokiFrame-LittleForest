@@ -18,11 +18,11 @@ public sealed partial class AudioKitPageViewModel
         try
         {
             settings = mLoadIndexSettings(mProjectRoot);
-            IndexStatusText = string.Empty;
+            SetIndexStatus(IndexStatusKind.None);
         }
         catch (Exception exception)
         {
-            IndexStatusText = "配置读取失败，已使用默认值：" + exception.Message;
+            SetIndexStatus(IndexStatusKind.LoadFailed, error: exception.Message);
         }
         ApplyIndexSettings(settings);
     }
@@ -58,6 +58,15 @@ public sealed partial class AudioKitPageViewModel
         return TrySaveIndexSettingsAsync(true);
     }
 
+    /// <summary>
+    /// 在 Workbench 关闭前提交当前索引草稿，避免焦点仍停留在输入控件时跳过失焦保存；
+    /// 由关闭流程在线程池上异步等待，不阻塞 UI 线程。
+    /// </summary>
+    internal async Task PersistIndexSettingsOnCloseAsync()
+    {
+        await TrySaveIndexSettingsAsync(false).ConfigureAwait(false);
+    }
+
     /// <summary>保存当前页面配置并把失败投影到索引状态栏。</summary>
     private async Task<bool> TrySaveIndexSettingsAsync(bool showSuccess)
     {
@@ -68,17 +77,17 @@ public sealed partial class AudioKitPageViewModel
                 mProjectRoot,
                 CreateIndexSettings(),
                 mLifetimeCancellation.Token);
-            if (showSuccess) IndexStatusText = "配置已保存";
+            if (showSuccess) SetIndexStatus(IndexStatusKind.Saved);
             return true;
         }
         catch (OperationCanceledException) when (mLifetimeCancellation.IsCancellationRequested)
         {
-            IndexStatusText = string.Empty;
+            SetIndexStatus(IndexStatusKind.None);
             return false;
         }
         catch (Exception exception)
         {
-            IndexStatusText = "配置保存失败：" + exception.Message;
+            SetIndexStatus(IndexStatusKind.SaveFailed, error: exception.Message);
             return false;
         }
     }
